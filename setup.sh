@@ -40,34 +40,37 @@ fi
 
 # --- Install Homebrew if missing ---
 if ! command -v brew &>/dev/null; then
-    echo "[1/8] Installing Homebrew..."
+    echo "[1/9] Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     eval "$(/opt/homebrew/bin/brew shellenv)"
 else
-    echo "[1/8] Homebrew already installed."
+    echo "[1/9] Homebrew already installed."
 fi
 
 # --- Run config scripts ---
-echo "[2/8] Installing Tailscale..."
+echo "[2/9] Installing Tailscale..."
 bash "$SCRIPT_DIR/config/tailscale.sh"
 
-echo "[3/8] Installing Ollama + pulling models..."
+echo "[3/9] Installing Ollama + pulling models..."
 bash "$SCRIPT_DIR/config/ollama.sh" "$BRAIN"
 
-echo "[4/8] Installing mosh..."
+echo "[4/9] Installing mosh..."
 bash "$SCRIPT_DIR/config/mosh.sh"
 
-echo "[5/8] Installing tmux + config..."
+echo "[5/9] Installing tmux + config..."
 bash "$SCRIPT_DIR/config/tmux.sh" "$SCRIPT_DIR/shared/tmux.conf"
 
-echo "[6/8] Configuring Claude Code..."
+echo "[6/9] Configuring Claude Code..."
 bash "$SCRIPT_DIR/config/claude-code.sh" "$BRAIN" "$SCRIPT_DIR"
 
-echo "[7/8] Installing/updating OpenClaw gateway..."
+echo "[7/9] Installing/updating OpenClaw gateway..."
 bash "$SCRIPT_DIR/config/openclaw.sh" "$BRAIN"
 
+echo "[8/9] Installing Pinchtab browser control..."
+bash "$SCRIPT_DIR/config/pinchtab.sh" "$BRAIN"
+
 # --- Set hostname for easy identification ---
-echo "[8/8] Setting hostname to $HOSTNAME_LABEL..."
+echo "[9/9] Setting hostname to $HOSTNAME_LABEL..."
 sudo scutil --set ComputerName "$HOSTNAME_LABEL"
 sudo scutil --set LocalHostName "$HOSTNAME_LABEL"
 

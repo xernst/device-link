@@ -70,6 +70,14 @@ check_helper() {
         details+="openclaw=NO "
     fi
 
+    # Check Pinchtab browser control
+    local pinchtab_port="${PINCHTAB_PORT:-9867}"
+    if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "curl -s -o /dev/null -w '%{http_code}' http://localhost:${pinchtab_port}/health 2>/dev/null" | grep -q "200"; then
+        details+="pinchtab=yes "
+    else
+        details+="pinchtab=NO "
+    fi
+
     # Check disk space
     local disk_free
     disk_free=$(ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "df -h / | tail -1 | awk '{print \$4}'")

@@ -9,7 +9,9 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - **Trigger**: CLI (`device-link left/right/both`), Claude Code slash commands (`/left-brain`, `/right-brain`), or Telegram bot
 - **Model stack**: Claude (reasoning) → Ollama (execution, free)
 - **Gateway**: OpenClaw on each helper (always-on API, Tailscale-bound)
-- **Notifications**: Telegram bot for push notifications + task dispatch from phone
+- **Browser**: Pinchtab on each helper (HTTP API for browser control)
+- **Notifications**: Telegram bot with Claude review gate before delivery
+- **Second Brain**: Obsidian vault at `~/Documents/second-brain/` (task ledger + knowledge base)
 - **Dashboard**: Mission Control for monitoring
 
 ## Brain Toolkits
@@ -31,13 +33,15 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - `main-mac/setup.sh` — one-shot main Mac installer
 - `config/claude-code.sh` — installs full toolkit (agents, skills, rules, commands)
 - `config/openclaw.sh` — install/update OpenClaw gateway per helper
-- `trigger/trigger.sh` — CLI to send tasks from main Mac
+- `config/pinchtab.sh` — install/configure Pinchtab browser control per helper
+- `trigger/trigger.sh` — CLI to send tasks from main Mac (with review gate)
 - `trigger/pipeline.sh` — 2-tier pipeline with bidirectional fallback
+- `trigger/digest.sh` — daily task digest generator for second brain
 - `telegram/telegram-bridge.py` — Telegram bot for mobile control
 - `telegram/notify-telegram.sh` — push notification helper
 - `left-brain/profile.md` — left brain agent personality + agent roster
 - `right-brain/profile.md` — right brain agent personality + agent roster
-- `shared/healthcheck.sh` — verify helpers are alive (SSH, tmux, Ollama, Claude, OpenClaw)
+- `shared/healthcheck.sh` — verify helpers (SSH, tmux, Ollama, Claude, OpenClaw, Pinchtab)
 
 ## Commands
 ```bash
@@ -53,6 +57,7 @@ device-link both "review PR"              # send to both
 device-link status                        # check helper health
 device-link results                       # show recent results
 device-link pull                          # sync results from helpers
+device-link digest                        # generate daily task summary
 
 # Session management
 device-link attach left                   # attach to left brain tmux
@@ -62,6 +67,21 @@ device-link attach right                  # attach to right brain tmux
 device-link queue left "run tests"        # fire-and-forget
 device-link show-queue                    # show pending tasks
 ```
+
+## Second Brain Slash Commands
+```
+/second-brain-interview    Personalize your vault's CLAUDE.md
+/inbox-triage              Process inbox to zero (route notes)
+/connection-finder <topic> Find hidden connections in Galaxy
+/writing-partner <topic>   Draft content from vault notes
+/journal-analysis          Analyze journal patterns
+/book-coach <title>        Process book highlights into knowledge
+/token-dashboard           Show token usage across all configs
+/token-audit               Audit and optimize token usage
+```
+
+## Review Gate
+Every task result goes through a Claude review before Telegram delivery. The review is a 2-3 sentence executive summary flagging any issues. Sent to Telegram before the completion notification.
 
 ## Telegram
 Send tasks from your phone: `left: run tests` or `right: design auth`

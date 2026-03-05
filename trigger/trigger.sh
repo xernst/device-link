@@ -197,16 +197,103 @@ send_task() {
         *)         send_task_pipeline "$host" "$brain" "$task" || rc=$? ;;
     esac
 
-    # Send Telegram notification
+    # Claude review gate — quick review before delivery
+    local review=""
+    if [[ $rc -eq 0 ]]; then
+        review=$(review_result "$brain" "$task")
+    fi
+
+    # Send Telegram notification (review first, then status)
     if type send_telegram &>/dev/null; then
         if [[ $rc -eq 0 ]]; then
+            if [[ -n "$review" ]]; then
+                send_telegram "Review (${brain}): ${review}"
+            fi
             send_telegram "${brain} brain completed: ${task}"
         else
             send_telegram "${brain} brain failed (exit ${rc}): ${task}"
         fi
     fi
 
+    # Log to second brain ledger
+    log_to_ledger "$brain" "$task" "$mode" "$rc"
+
     return $rc
+}
+
+review_result() {
+    local brain="$1"
+    local task="$2"
+
+    # Find the most recent result file for this brain
+    local latest_result
+    latest_result=$(ls -t "$RESULTS_DIR/${brain}-"*.md 2>/dev/null | head -1)
+    [[ -f "$latest_result" ]] || return 0
+
+    local snippet
+    snippet=$(head -50 "$latest_result")
+
+    local review_prompt="You are a senior reviewer. Give a 2-3 sentence executive summary of this task result. Flag any issues, gaps, or things that need attention. Be direct and concise.
+
+Task: ${task}
+Brain: ${brain}
+
+Result:
+${snippet}"
+
+    # Use claude --print for the review (runs locally on main Mac)
+    local review_output
+    if review_output=$(echo "$review_prompt" | claude --print 2>/dev/null); then
+        # Truncate to fit Telegram limits
+        echo "${review_output:0:500}"
+    fi
+}
+
+log_to_ledger() {
+    local brain="$1"
+    local task="$2"
+    local mode="$3"
+    local exit_code="$4"
+    local vault_dir="$HOME/Documents/second-brain"
+    local ledger_dir="$vault_dir/_ledger/tasks"
+
+    # Skip if vault doesn't exist
+    [[ -d "$vault_dir" ]] || return 0
+
+    mkdir -p "$ledger_dir"
+
+    local timestamp
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    local date_iso
+    date_iso="$(date -Iseconds)"
+    local status="completed"
+    [[ "$exit_code" -ne 0 ]] && status="failed"
+
+    local result_snippet=""
+    local result_file="$RESULTS_DIR/${brain}-${timestamp}.md"
+    if [[ -f "$result_file" ]]; then
+        result_snippet=$(head -5 "$result_file")
+    fi
+
+    cat > "$ledger_dir/${timestamp}-${brain}.md" <<EOF
+---
+brain: ${brain}
+task: "${task}"
+mode: ${mode}
+status: ${status}
+timestamp: ${date_iso}
+tags: [task-log, from/swarm]
+---
+
+# ${brain^} Brain — ${task}
+
+**Status**: ${status}
+**Mode**: ${mode}
+**Time**: ${date_iso}
+
+## Result Preview
+${result_snippet:-"(no output captured)"}
+EOF
 }
 
 show_status() {
@@ -434,6 +521,9 @@ case "$COMMAND" in
     show-queue)
         show_queue
         ;;
+    digest)
+        bash "$SCRIPT_DIR/digest.sh" "${1:-}"
+        ;;
     help|*)
         echo "Device Link — Trigger tasks on helper machines"
         echo ""
@@ -450,6 +540,7 @@ case "$COMMAND" in
         echo "  device-link attach <left|right>        Attach to brain tmux session"
         echo "  device-link queue <left|right> \"task\"   Fire-and-forget background task"
         echo "  device-link show-queue                 Show pending background tasks"
+        echo "  device-link digest [YYYY-MM-DD]        Generate daily digest"
         echo ""
         echo "Modes:"
         echo "  pipeline  — Claude reasoning -> Ollama execution [default]"
