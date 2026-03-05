@@ -1,0 +1,14 @@
+# Left Brain — Analytical Models
+# These models are optimized for code analysis, debugging, and reasoning.
+# Conservative defaults — safe for 8GB RAM machines.
+
+qwen2.5-coder:7b
+deepseek-coder:6.7b
+
+# Uncomment for 16GB+ machines:
+# qwen2.5-coder:14b
+# deepseek-coder-v2:16b
+
+# Uncomment for 32GB+ machines:
+# codellama:34b
+# deepseek-coder:33b

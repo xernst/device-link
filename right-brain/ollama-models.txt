@@ -1,0 +1,14 @@
+# Right Brain — Creative Models
+# These models are optimized for reasoning, writing, and brainstorming.
+# Conservative defaults — safe for 8GB RAM machines.
+
+llama3.1:8b
+mistral:7b
+
+# Uncomment for 16GB+ machines:
+# llama3.1:70b  (needs ~40GB, use with exo across both machines)
+# mixtral:8x7b
+
+# Uncomment for 32GB+ machines:
+# llama3.1:70b
+# command-r:35b
