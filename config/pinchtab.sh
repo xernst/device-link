@@ -20,6 +20,9 @@ echo ""
 PINCHTAB_DIR="$HOME/.pinchtab"
 PINCHTAB_PORT="${PINCHTAB_PORT:-9867}"
 
+# Bind to Tailscale IP only — never expose on all interfaces
+TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "127.0.0.1")
+
 # --- Install ---
 
 if command -v pinchtab &>/dev/null; then
@@ -61,7 +64,7 @@ BRIDGE_HEADLESS=true
 BRIDGE_STEALTH=full
 BRIDGE_BLOCK_IMAGES=true
 BRIDGE_NO_ANIMATIONS=true
-BRIDGE_BIND=0.0.0.0
+BRIDGE_BIND=${TAILSCALE_IP}
 BRIDGE_PROFILE=${PINCHTAB_DIR}/chrome-profile
 BRIDGE_STATE_DIR=${PINCHTAB_DIR}
 BRIDGE_MAX_TABS=10
@@ -100,7 +103,7 @@ cat > "$PLIST_FILE" <<EOF
         <key>BRIDGE_NO_ANIMATIONS</key>
         <string>true</string>
         <key>BRIDGE_BIND</key>
-        <string>0.0.0.0</string>
+        <string>${TAILSCALE_IP}</string>
         <key>BRIDGE_PROFILE</key>
         <string>${PINCHTAB_DIR}/chrome-profile</string>
         <key>BRIDGE_STATE_DIR</key>

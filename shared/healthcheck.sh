@@ -78,6 +78,17 @@ check_helper() {
         details+="pinchtab=NO "
     fi
 
+    # Check Google Workspace CLI
+    if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "command -v gws >/dev/null 2>&1"; then
+        if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "gws auth status >/dev/null 2>&1"; then
+            details+="gws=yes "
+        else
+            details+="gws=NO_AUTH "
+        fi
+    else
+        details+="gws=NO "
+    fi
+
     # Check disk space
     local disk_free
     disk_free=$(ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "df -h / | tail -1 | awk '{print \$4}'")

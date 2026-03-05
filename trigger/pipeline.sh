@@ -163,7 +163,7 @@ echo ""
 # Tier 1: Claude reasons and plans
 PLAN=""
 TIER1_FAILED=false
-if ! PLAN=$(tier1_claude "$TASK" "$BRAIN" "$HOST" 2>&1); then
+if ! PLAN=$(tier1_claude "$TASK" "$BRAIN" "$HOST" 2>"$RUN_DIR/tier1-stderr.log"); then
     TIER1_FAILED=true
     echo "[Tier 1] Claude unavailable — falling back to Ollama-only" >&2
 fi

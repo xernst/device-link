@@ -269,10 +269,12 @@ log_to_ledger() {
     local status="completed"
     [[ "$exit_code" -ne 0 ]] && status="failed"
 
+    # Find the latest result file for this brain (not a fresh timestamp — result was written earlier)
     local result_snippet=""
-    local result_file="$RESULTS_DIR/${brain}-${timestamp}.md"
-    if [[ -f "$result_file" ]]; then
-        result_snippet=$(head -5 "$result_file")
+    local latest_result
+    latest_result=$(ls -t "$RESULTS_DIR/${brain}-"*.md 2>/dev/null | head -1)
+    if [[ -f "$latest_result" ]]; then
+        result_snippet=$(head -5 "$latest_result")
     fi
 
     cat > "$ledger_dir/${timestamp}-${brain}.md" <<EOF
@@ -446,12 +448,12 @@ parse_mode_and_task() {
             --direct)    mode="direct"; shift ;;
             --ollama)    mode="ollama"; shift ;;
             --openclaw)  mode="openclaw"; shift ;;
-            *)           task="$1"; shift ;;
+            *)           task="$*"; break ;;
         esac
     done
 
-    echo "$mode"
-    echo "$task"
+    # Single line so `read -r MODE TASK` works correctly with multi-word tasks
+    echo "$mode $task"
 }
 
 # --- Main ---

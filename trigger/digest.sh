@@ -45,8 +45,16 @@ for f in "${MATCHING_FILES[@]}"; do
     status=$(grep "^status:" "$f" | head -1 | sed 's/status: *//')
     mode=$(grep "^mode:" "$f" | head -1 | sed 's/mode: *//')
 
-    [[ "$brain" == "left" ]] && ((LEFT_COUNT++)) || ((RIGHT_COUNT++))
-    [[ "$status" == "completed" ]] && ((COMPLETED++)) || ((FAILED++))
+    if [[ "$brain" == "left" ]]; then
+        ((LEFT_COUNT++))
+    else
+        ((RIGHT_COUNT++))
+    fi
+    if [[ "$status" == "completed" ]]; then
+        ((COMPLETED++))
+    else
+        ((FAILED++))
+    fi
 
     local_time=$(basename "$f" .md | cut -d- -f1 | sed 's/\(....\)\(..\)\(..\)\(..\)\(..\)\(..\)/\4:\5/')
     TASKS_LIST+="| ${local_time} | ${brain} | ${mode} | ${task} | ${status} |\n"
