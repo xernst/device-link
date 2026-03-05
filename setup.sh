@@ -40,31 +40,34 @@ fi
 
 # --- Install Homebrew if missing ---
 if ! command -v brew &>/dev/null; then
-    echo "[1/7] Installing Homebrew..."
+    echo "[1/8] Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     eval "$(/opt/homebrew/bin/brew shellenv)"
 else
-    echo "[1/7] Homebrew already installed."
+    echo "[1/8] Homebrew already installed."
 fi
 
 # --- Run config scripts ---
-echo "[2/7] Installing Tailscale..."
+echo "[2/8] Installing Tailscale..."
 bash "$SCRIPT_DIR/config/tailscale.sh"
 
-echo "[3/7] Installing Ollama + pulling models..."
+echo "[3/8] Installing Ollama + pulling models..."
 bash "$SCRIPT_DIR/config/ollama.sh" "$BRAIN"
 
-echo "[4/7] Installing mosh..."
+echo "[4/8] Installing mosh..."
 bash "$SCRIPT_DIR/config/mosh.sh"
 
-echo "[5/7] Installing tmux + config..."
+echo "[5/8] Installing tmux + config..."
 bash "$SCRIPT_DIR/config/tmux.sh" "$SCRIPT_DIR/shared/tmux.conf"
 
-echo "[6/7] Configuring Claude Code..."
+echo "[6/8] Configuring Claude Code..."
 bash "$SCRIPT_DIR/config/claude-code.sh" "$BRAIN" "$SCRIPT_DIR"
 
+echo "[7/8] Installing/updating OpenClaw gateway..."
+bash "$SCRIPT_DIR/config/openclaw.sh" "$BRAIN"
+
 # --- Set hostname for easy identification ---
-echo "[7/7] Setting hostname to $HOSTNAME_LABEL..."
+echo "[8/8] Setting hostname to $HOSTNAME_LABEL..."
 sudo scutil --set ComputerName "$HOSTNAME_LABEL"
 sudo scutil --set LocalHostName "$HOSTNAME_LABEL"
 

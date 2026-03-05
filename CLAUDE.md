@@ -6,8 +6,11 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - **Left brain**: analytical (code review, testing, debugging, security)
 - **Right brain**: creative (design, research, planning, docs)
 - **Networking**: Tailscale mesh, mosh + tmux for persistence
-- **Trigger**: CLI (`device-link left/right/both`) or Claude Code slash commands (`/left-brain`, `/right-brain`)
+- **Trigger**: CLI (`device-link left/right/both`), Claude Code slash commands (`/left-brain`, `/right-brain`), or Telegram bot
 - **Model stack**: Claude (reasoning) → Ollama (execution, free)
+- **Gateway**: OpenClaw on each helper (always-on API, Tailscale-bound)
+- **Notifications**: Telegram bot for push notifications + task dispatch from phone
+- **Dashboard**: Mission Control for monitoring
 
 ## Brain Toolkits
 
@@ -26,16 +29,26 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 ## Key Files
 - `setup.sh` — run on each helper Mac (`./setup.sh left` or `./setup.sh right`)
 - `config/claude-code.sh` — installs full toolkit (agents, skills, rules, commands)
+- `config/openclaw.sh` — install/update OpenClaw gateway per helper
 - `trigger/trigger.sh` — CLI to send tasks from main Mac
+- `telegram/telegram-bridge.py` — Telegram bot for mobile control
+- `telegram/notify-telegram.sh` — push notification helper
 - `left-brain/profile.md` — left brain agent personality + agent roster
 - `right-brain/profile.md` — right brain agent personality + agent roster
 - `shared/healthcheck.sh` — verify helpers are alive
 
 ## Commands
 ```bash
-device-link left "run tests"     # send to left brain
-device-link right "design auth"  # send to right brain
-device-link both "review PR"     # send to both
-device-link status               # check health
-device-link results              # show recent results
+device-link left "run tests"              # pipeline mode (default)
+device-link left --direct "run tests"     # claude only
+device-link left --ollama "run tests"     # ollama only (fastest)
+device-link left --openclaw "run tests"   # via openclaw gateway
+device-link right "design auth"           # send to right brain
+device-link both "review PR"              # send to both
+device-link status                        # check health
+device-link results                       # show recent results
 ```
+
+## Telegram
+Send tasks from your phone: `left: run tests` or `right: design auth`
+Commands: `/status`, `/brief`, `/results`, `/help`

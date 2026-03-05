@@ -12,11 +12,13 @@
 #   --pipeline    Claude reasoning -> Ollama execution [default]
 #   --direct      Claude only (skip Ollama)
 #   --ollama      Ollama only (fastest, free, no Claude)
+#   --openclaw    Via OpenClaw gateway (always-on, API-driven)
 #
 # Examples:
 #   device-link left "run tests"                  # uses pipeline (default)
 #   device-link left --direct "run tests"         # claude only
 #   device-link left --ollama "run tests"         # ollama only
+#   device-link left --openclaw "run tests"       # via openclaw gateway
 #
 # Configuration:
 #   Set these in ~/.device-link/config or as environment variables:
@@ -24,9 +26,11 @@
 #     DEVICE_LINK_RIGHT_HOST        — Tailscale hostname/IP of right brain
 #     DEVICE_LINK_USER              — SSH username (defaults to current user)
 #     DEVICE_LINK_PROJECT           — Project path on helpers (defaults to cwd name)
-#     DEVICE_LINK_MODE              — Default mode: pipeline|direct|ollama
+#     DEVICE_LINK_MODE              — Default mode: pipeline|direct|ollama|openclaw
 #     DEVICE_LINK_OLLAMA_MODEL_LEFT — Ollama model for left brain
 #     DEVICE_LINK_OLLAMA_MODEL_RIGHT— Ollama model for right brain
+#     OPENCLAW_GATEWAY_TOKEN        — Auth token for OpenClaw gateways
+#     OPENCLAW_PORT                 — OpenClaw gateway port (default: 18789)
 
 set -euo pipefail
 
@@ -44,8 +48,20 @@ SSH_USER="${DEVICE_LINK_USER:-$(whoami)}"
 PROJECT="${DEVICE_LINK_PROJECT:-$(basename "$(pwd)")}"
 RESULTS_DIR="$HOME/.device-link/results"
 DEFAULT_MODE="${DEVICE_LINK_MODE:-pipeline}"
+OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+OPENCLAW_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 
 mkdir -p "$RESULTS_DIR"
+
+# Source Telegram notification helper if available
+TELEGRAM_NOTIFY="$HOME/.device-link/telegram/notify-telegram.sh"
+if [[ -f "$TELEGRAM_NOTIFY" ]]; then
+    # Load env for Telegram credentials
+    if [[ -f "$HOME/.device-link/telegram/.env" ]]; then
+        set +u; source "$HOME/.device-link/telegram/.env"; set -u
+    fi
+    source "$TELEGRAM_NOTIFY"
+fi
 
 # --- Functions ---
 
@@ -121,6 +137,48 @@ send_task_pipeline() {
     bash "$SCRIPT_DIR/pipeline.sh" "$brain" "$host" "$task"
 }
 
+send_task_openclaw() {
+    local host="$1"
+    local brain="$2"
+    local task="$3"
+    local timestamp
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    local result_file="$RESULTS_DIR/${brain}-${timestamp}.md"
+
+    if [[ -z "$OPENCLAW_TOKEN" ]]; then
+        echo "Error: OPENCLAW_GATEWAY_TOKEN not set. Run 'openclaw config get gateway.auth.token' on the helper." >&2
+        return 1
+    fi
+
+    echo "[openclaw] Sending to ${brain} brain ($host:$OPENCLAW_PORT)..."
+
+    local response
+    response=$(curl -s --max-time 300 \
+        "http://${host}:${OPENCLAW_PORT}/v1/chat/completions" \
+        -H "Authorization: Bearer ${OPENCLAW_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+            --arg content "$task" \
+            --arg session "device-link-${brain}-${timestamp}" \
+            '{model: "openclaw", stream: false, messages: [{role: "user", content: $content}], user: $session}')")
+
+    local content
+    content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
+
+    if [[ -n "$content" ]]; then
+        echo "$content" > "$result_file"
+        echo "Done. Results: $result_file"
+        echo ""
+        cat "$result_file"
+    else
+        local error
+        error=$(echo "$response" | jq -r '.error.message // empty')
+        echo "Error: OpenClaw returned empty response from ${host}" >&2
+        [[ -n "$error" ]] && echo "  $error" >&2
+        return 1
+    fi
+}
+
 send_task() {
     local host="$1"
     local brain="$2"
@@ -131,8 +189,14 @@ send_task() {
         pipeline)  send_task_pipeline "$host" "$brain" "$task" ;;
         direct)    send_task_direct "$host" "$brain" "$task" ;;
         ollama)    send_task_ollama "$host" "$brain" "$task" ;;
+        openclaw)  send_task_openclaw "$host" "$brain" "$task" ;;
         *)         send_task_pipeline "$host" "$brain" "$task" ;;
     esac
+
+    # Send Telegram notification on completion
+    if type send_telegram &>/dev/null; then
+        send_telegram "✅ ${brain} brain completed: ${task}"
+    fi
 }
 
 show_status() {
@@ -183,6 +247,7 @@ parse_mode_and_task() {
             --pipeline)  mode="pipeline"; shift ;;
             --direct)    mode="direct"; shift ;;
             --ollama)    mode="ollama"; shift ;;
+            --openclaw)  mode="openclaw"; shift ;;
             *)           task="$1"; shift ;;
         esac
     done
@@ -200,7 +265,7 @@ case "$COMMAND" in
     left)
         read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link left [--pipeline|--direct|--ollama] \"<task>\"" >&2
+            echo "Usage: device-link left [--pipeline|--direct|--ollama|--openclaw] \"<task>\"" >&2
             exit 1
         fi
         send_task "$LEFT_HOST" "left" "$TASK" "$MODE"
@@ -208,7 +273,7 @@ case "$COMMAND" in
     right)
         read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link right [--pipeline|--direct|--ollama] \"<task>\"" >&2
+            echo "Usage: device-link right [--pipeline|--direct|--ollama|--openclaw] \"<task>\"" >&2
             exit 1
         fi
         send_task "$RIGHT_HOST" "right" "$TASK" "$MODE"
@@ -216,7 +281,7 @@ case "$COMMAND" in
     both)
         read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link both [--pipeline|--direct|--ollama] \"<task>\"" >&2
+            echo "Usage: device-link both [--pipeline|--direct|--ollama|--openclaw] \"<task>\"" >&2
             exit 1
         fi
         send_task "$LEFT_HOST" "left" "$TASK" "$MODE" &
@@ -238,12 +303,17 @@ case "$COMMAND" in
         echo "  device-link left \"<task>\"              Pipeline mode (default)"
         echo "  device-link left --direct \"<task>\"     Claude only"
         echo "  device-link left --ollama \"<task>\"     Ollama only (fastest)"
+        echo "  device-link left --openclaw \"<task>\"   Via OpenClaw gateway"
         echo "  device-link right \"<task>\"             Pipeline mode (default)"
         echo "  device-link both \"<task>\"              Both brains in parallel"
         echo "  device-link status                     Check helper status"
         echo "  device-link results                    Show recent results"
         echo ""
-        echo "Pipeline: Claude (reasoning) -> Ollama (execution, free)"
+        echo "Modes:"
+        echo "  pipeline  — Claude reasoning -> Ollama execution [default]"
+        echo "  direct    — Claude only (skip Ollama)"
+        echo "  ollama    — Ollama only (fastest, free)"
+        echo "  openclaw  — Via OpenClaw gateway (always-on, API-driven)"
         echo ""
         echo "Config: ~/.device-link/config"
         ;;
