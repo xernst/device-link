@@ -62,6 +62,14 @@ check_helper() {
     ts_ip=$(ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "tailscale ip -4 2>/dev/null" || echo "none")
     details+="tailscale=${ts_ip} "
 
+    # Check OpenClaw gateway
+    local openclaw_port="${OPENCLAW_PORT:-18789}"
+    if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "curl -s -o /dev/null -w '%{http_code}' http://localhost:${openclaw_port}/v1/models 2>/dev/null" | grep -q "200"; then
+        details+="openclaw=yes "
+    else
+        details+="openclaw=NO "
+    fi
+
     # Check disk space
     local disk_free
     disk_free=$(ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "df -h / | tail -1 | awk '{print \$4}'")

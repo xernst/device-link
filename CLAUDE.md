@@ -28,25 +28,39 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 
 ## Key Files
 - `setup.sh` — run on each helper Mac (`./setup.sh left` or `./setup.sh right`)
+- `main-mac/setup.sh` — one-shot main Mac installer
 - `config/claude-code.sh` — installs full toolkit (agents, skills, rules, commands)
 - `config/openclaw.sh` — install/update OpenClaw gateway per helper
 - `trigger/trigger.sh` — CLI to send tasks from main Mac
+- `trigger/pipeline.sh` — 2-tier pipeline with bidirectional fallback
 - `telegram/telegram-bridge.py` — Telegram bot for mobile control
 - `telegram/notify-telegram.sh` — push notification helper
 - `left-brain/profile.md` — left brain agent personality + agent roster
 - `right-brain/profile.md` — right brain agent personality + agent roster
-- `shared/healthcheck.sh` — verify helpers are alive
+- `shared/healthcheck.sh` — verify helpers are alive (SSH, tmux, Ollama, Claude, OpenClaw)
 
 ## Commands
 ```bash
+# Task dispatch
 device-link left "run tests"              # pipeline mode (default)
 device-link left --direct "run tests"     # claude only
 device-link left --ollama "run tests"     # ollama only (fastest)
 device-link left --openclaw "run tests"   # via openclaw gateway
 device-link right "design auth"           # send to right brain
 device-link both "review PR"              # send to both
-device-link status                        # check health
+
+# Monitoring
+device-link status                        # check helper health
 device-link results                       # show recent results
+device-link pull                          # sync results from helpers
+
+# Session management
+device-link attach left                   # attach to left brain tmux
+device-link attach right                  # attach to right brain tmux
+
+# Background tasks
+device-link queue left "run tests"        # fire-and-forget
+device-link show-queue                    # show pending tasks
 ```
 
 ## Telegram

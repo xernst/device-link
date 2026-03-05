@@ -7,6 +7,9 @@
 #   device-link both "review this PR"
 #   device-link status
 #   device-link results
+#   device-link pull
+#   device-link attach <left|right>
+#   device-link queue left "task"
 #
 # Modes (add before the task):
 #   --pipeline    Claude reasoning -> Ollama execution [default]
@@ -243,6 +246,107 @@ show_results() {
     done
 }
 
+pull_results() {
+    echo "Pulling results from helpers..."
+    echo ""
+
+    for brain_host in "left:${LEFT_HOST}" "right:${RIGHT_HOST}"; do
+        local brain="${brain_host%%:*}"
+        local host="${brain_host##*:}"
+
+        printf "%-12s " "${brain} brain:"
+        if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "test -d ~/.device-link/results" &>/dev/null; then
+            rsync -az --ignore-existing \
+                "${SSH_USER}@${host}:~/.device-link/results/" \
+                "$RESULTS_DIR/" 2>/dev/null
+            echo "synced"
+        else
+            echo "no results directory (or offline)"
+        fi
+    done
+
+    echo ""
+    echo "Local results:"
+    ls -t "$RESULTS_DIR"/*.md 2>/dev/null | head -5 | while read -r f; do
+        echo "  $(basename "$f")"
+    done
+}
+
+attach_brain() {
+    local brain="$1"
+    local host
+
+    case "$brain" in
+        left)  host="$LEFT_HOST" ;;
+        right) host="$RIGHT_HOST" ;;
+        *)
+            echo "Usage: device-link attach <left|right>" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "Attaching to ${brain} brain ($host)..."
+    if command -v mosh &>/dev/null; then
+        exec mosh "${SSH_USER}@${host}" -- tmux attach -t "${brain}-brain" 2>/dev/null \
+            || exec mosh "${SSH_USER}@${host}" -- tmux new -s "${brain}-brain"
+    else
+        exec ssh "${SSH_USER}@${host}" -t "tmux attach -t ${brain}-brain 2>/dev/null \
+            || tmux new -s ${brain}-brain"
+    fi
+}
+
+queue_task() {
+    local brain="$1"
+    local host="$2"
+    local task="$3"
+    local mode="$4"
+    local timestamp
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+
+    local queue_dir="$HOME/.device-link/queue"
+    mkdir -p "$queue_dir"
+
+    local queue_file="$queue_dir/${brain}-${timestamp}.task"
+    echo "BRAIN=${brain}" > "$queue_file"
+    echo "TASK=${task}" >> "$queue_file"
+    echo "QUEUED=$(date -Iseconds)" >> "$queue_file"
+
+    echo "Queued: ${brain} brain — ${task}"
+
+    # Fire in background — detach from terminal
+    (
+        send_task "$host" "$brain" "$task" "$mode" &>/dev/null
+        rm -f "$queue_file"
+    ) &
+    disown
+
+    echo "  Running in background (PID $!)"
+}
+
+show_queue() {
+    local queue_dir="$HOME/.device-link/queue"
+    mkdir -p "$queue_dir"
+
+    echo "Task Queue"
+    echo "=========="
+    echo ""
+
+    local found=0
+    for f in "$queue_dir"/*.task 2>/dev/null; do
+        [[ -f "$f" ]] || continue
+        found=1
+        local brain task queued
+        brain=$(grep "^BRAIN=" "$f" | cut -d= -f2)
+        task=$(grep "^TASK=" "$f" | cut -d= -f2-)
+        queued=$(grep "^QUEUED=" "$f" | cut -d= -f2-)
+        echo "  [${brain}] ${task} (queued: ${queued})"
+    done
+
+    if [[ "$found" -eq 0 ]]; then
+        echo "  No tasks in queue."
+    fi
+}
+
 # --- Parse mode flag ---
 
 parse_mode_and_task() {
@@ -303,6 +407,33 @@ case "$COMMAND" in
     results)
         show_results
         ;;
+    pull)
+        pull_results
+        ;;
+    attach)
+        if [[ -z "${1:-}" ]]; then
+            echo "Usage: device-link attach <left|right>" >&2
+            exit 1
+        fi
+        attach_brain "$1"
+        ;;
+    queue)
+        BRAIN_TARGET="${1:-}"
+        shift || true
+        read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
+        if [[ -z "$BRAIN_TARGET" || -z "$TASK" ]]; then
+            echo "Usage: device-link queue <left|right> [--mode] \"<task>\"" >&2
+            exit 1
+        fi
+        case "$BRAIN_TARGET" in
+            left)  queue_task "left" "$LEFT_HOST" "$TASK" "$MODE" ;;
+            right) queue_task "right" "$RIGHT_HOST" "$TASK" "$MODE" ;;
+            *)     echo "Unknown brain: $BRAIN_TARGET (use left or right)" >&2; exit 1 ;;
+        esac
+        ;;
+    show-queue)
+        show_queue
+        ;;
     help|*)
         echo "Device Link — Trigger tasks on helper machines"
         echo ""
@@ -315,6 +446,10 @@ case "$COMMAND" in
         echo "  device-link both \"<task>\"              Both brains in parallel"
         echo "  device-link status                     Check helper status"
         echo "  device-link results                    Show recent results"
+        echo "  device-link pull                       Sync results from helpers"
+        echo "  device-link attach <left|right>        Attach to brain tmux session"
+        echo "  device-link queue <left|right> \"task\"   Fire-and-forget background task"
+        echo "  device-link show-queue                 Show pending background tasks"
         echo ""
         echo "Modes:"
         echo "  pipeline  — Claude reasoning -> Ollama execution [default]"

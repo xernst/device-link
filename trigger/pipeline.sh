@@ -161,8 +161,35 @@ echo "======================================"
 echo ""
 
 # Tier 1: Claude reasons and plans
-PLAN=$(tier1_claude "$TASK" "$BRAIN" "$HOST")
+PLAN=""
+TIER1_FAILED=false
+if ! PLAN=$(tier1_claude "$TASK" "$BRAIN" "$HOST" 2>&1); then
+    TIER1_FAILED=true
+    echo "[Tier 1] Claude unavailable — falling back to Ollama-only" >&2
+fi
 echo ""
+
+# If Claude failed entirely, go straight to Ollama with the raw task
+if [[ "$TIER1_FAILED" == "true" || -z "$PLAN" ]]; then
+    echo "[Fallback] Running task directly on Ollama..."
+    EXECUTION=$(tier2_ollama "$TASK" "$BRAIN" "$HOST")
+    RESULT_FILE="$RESULTS_DIR/${BRAIN}-${TIMESTAMP}.md"
+    {
+        echo "# Pipeline Result — ${BRAIN} brain"
+        echo "## Task: ${TASK}"
+        echo "## Status: COMPLETE (Ollama-only fallback)"
+        echo "## Timestamp: $(date)"
+        echo ""
+        echo "---"
+        echo "## Ollama Execution (Claude was unavailable)"
+        echo "$EXECUTION"
+    } > "$RESULT_FILE"
+    echo "======================================"
+    echo " Pipeline Complete (fallback mode)"
+    echo " Result: $RESULT_FILE"
+    echo "======================================"
+    exit 0
+fi
 
 # Extract execution steps for Ollama
 EXEC_STEPS=$(echo "$PLAN" | sed -n '/^## Execution Steps/,$p' | tail -n +2)
