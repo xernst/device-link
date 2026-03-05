@@ -24,9 +24,7 @@ Commands:
 """
 
 import os
-import shlex
 import asyncio
-import subprocess
 import logging
 from pathlib import Path
 from datetime import datetime, time
@@ -45,7 +43,10 @@ from telegram.ext import (
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 AUTHORIZED_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 RESULTS_DIR = Path.home() / ".device-link" / "results"
-TRIGGER_SCRIPT = str(Path.home() / ".device-link" / "trigger" / "trigger.sh")
+TRIGGER_SCRIPT = os.environ.get(
+    "DEVICE_LINK_TRIGGER",
+    str(Path(__file__).resolve().parent.parent / "trigger" / "trigger.sh"),
+)
 
 # Tailscale hostnames — update these or set via env
 LEFT_HOST = os.environ.get("DEVICE_LINK_LEFT_HOST", "helper-left")
@@ -93,7 +94,6 @@ async def ssh_check(host: str) -> str:
 
 async def dispatch_task(brain: str, task: str) -> tuple:
     """Send a task to a brain via the trigger script."""
-    safe_task = shlex.quote(task)
     proc = await asyncio.create_subprocess_exec(
         "bash", TRIGGER_SCRIPT, brain, task,
         stdout=asyncio.subprocess.PIPE,

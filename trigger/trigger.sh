@@ -185,18 +185,25 @@ send_task() {
     local task="$3"
     local mode="$4"
 
+    local rc=0
     case "$mode" in
-        pipeline)  send_task_pipeline "$host" "$brain" "$task" ;;
-        direct)    send_task_direct "$host" "$brain" "$task" ;;
-        ollama)    send_task_ollama "$host" "$brain" "$task" ;;
-        openclaw)  send_task_openclaw "$host" "$brain" "$task" ;;
-        *)         send_task_pipeline "$host" "$brain" "$task" ;;
+        pipeline)  send_task_pipeline "$host" "$brain" "$task" || rc=$? ;;
+        direct)    send_task_direct "$host" "$brain" "$task" || rc=$? ;;
+        ollama)    send_task_ollama "$host" "$brain" "$task" || rc=$? ;;
+        openclaw)  send_task_openclaw "$host" "$brain" "$task" || rc=$? ;;
+        *)         send_task_pipeline "$host" "$brain" "$task" || rc=$? ;;
     esac
 
-    # Send Telegram notification on completion
+    # Send Telegram notification
     if type send_telegram &>/dev/null; then
-        send_telegram "✅ ${brain} brain completed: ${task}"
+        if [[ $rc -eq 0 ]]; then
+            send_telegram "${brain} brain completed: ${task}"
+        else
+            send_telegram "${brain} brain failed (exit ${rc}): ${task}"
+        fi
     fi
+
+    return $rc
 }
 
 show_status() {

@@ -28,7 +28,6 @@ send_telegram() {
         "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
         -d chat_id="${TELEGRAM_CHAT}" \
         -d text="${message}" \
-        -d parse_mode="Markdown" \
         > /dev/null 2>&1
 }
 

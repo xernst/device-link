@@ -79,7 +79,7 @@ if [[ ! -f "$OPENCLAW_ENV" ]] || ! grep -q "OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_E
     echo "OPENCLAW_GATEWAY_TOKEN=$TOKEN" >> "$OPENCLAW_ENV"
     echo "  Generated new gateway auth token."
 else
-    TOKEN=$(grep "OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_ENV" | cut -d= -f2)
+    TOKEN=$(grep "OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_ENV" | cut -d= -f2-)
     echo "  Using existing gateway auth token."
 fi
 
