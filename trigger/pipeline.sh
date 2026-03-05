@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# Device Link — 3-Tier Model Pipeline
+# Device Link — 2-Tier Model Pipeline
 #
-# Tier 1: ChatGPT (OpenAI API) — reasoning and planning
-# Tier 2: Claude — verification and quality check
-# Tier 3: Ollama (local) — fast execution of routine tasks
+# Tier 1: Claude — reasoning, planning, and verification
+# Tier 2: Ollama (local, free) — fast execution of routine tasks
+#
+# No extra subscriptions needed. Claude uses your existing CLI auth.
+# Ollama is free and runs locally on the helper Macs.
 #
 # Usage:
 #   ./pipeline.sh <brain> <host> <task>
 #   ./pipeline.sh left helper-left "run all tests"
-#
-# The pipeline can also be called directly for local-only use:
 #   ./pipeline.sh local localhost "explain this function"
-#
-# Environment:
-#   OPENAI_API_KEY       — required for Tier 1 (ChatGPT reasoning)
-#   ANTHROPIC_API_KEY    — required for Tier 2 (Claude verification)
-#   OLLAMA_HOST          — defaults to localhost:11434
 
 set -euo pipefail
 
@@ -32,7 +27,6 @@ PIPELINE_DIR="$HOME/.device-link/pipeline"
 
 SSH_USER="${DEVICE_LINK_USER:-$(whoami)}"
 PROJECT="${DEVICE_LINK_PROJECT:-$(basename "$(pwd)")}"
-OPENAI_MODEL="${DEVICE_LINK_OPENAI_MODEL:-gpt-4o}"
 OLLAMA_MODEL_LEFT="${DEVICE_LINK_OLLAMA_MODEL_LEFT:-qwen2.5-coder:7b}"
 OLLAMA_MODEL_RIGHT="${DEVICE_LINK_OLLAMA_MODEL_RIGHT:-llama3.1:8b}"
 OLLAMA_ENDPOINT="${OLLAMA_HOST:-http://localhost:11434}"
@@ -48,119 +42,66 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$PIPELINE_DIR/${BRAIN}-${TIMESTAMP}"
 mkdir -p "$RUN_DIR"
 
-# --- Tier 1: ChatGPT Reasoning ---
+# --- Tier 1: Claude (reasoning + verification) ---
 
-tier1_chatgpt() {
+tier1_claude() {
     local task="$1"
     local brain="$2"
-    local output_file="$RUN_DIR/tier1-reasoning.md"
+    local host="$3"
+    local output_file="$RUN_DIR/tier1-claude.md"
 
-    echo "[Tier 1] ChatGPT reasoning..."
+    echo "[Tier 1] Claude reasoning..."
 
-    if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-        echo "[Tier 1] OPENAI_API_KEY not set — skipping ChatGPT, passing task directly to Claude" >&2
-        echo "$task" > "$output_file"
-        cat "$output_file"
-        return 0
-    fi
-
-    local system_prompt
+    local brain_context
     if [[ "$brain" == "left" ]]; then
-        system_prompt="You are an analytical AI assistant. Break down the following task into a clear, step-by-step plan. Focus on: correctness, testing strategy, edge cases, security implications. Be specific about what commands to run and what to check. Output a structured plan in markdown."
+        brain_context="You are the LEFT BRAIN (analytical). Focus on: correctness, testing, edge cases, security, performance."
     else
-        system_prompt="You are a creative AI assistant. Analyze the following task and produce a thoughtful approach. Focus on: architecture, user experience, design patterns, documentation structure. Suggest multiple options where appropriate. Output a structured plan in markdown."
+        brain_context="You are the RIGHT BRAIN (creative). Focus on: architecture, design, UX, documentation, multiple approaches."
     fi
 
-    local response
-    response=$(curl -s --max-time 60 "https://api.openai.com/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-        -d "$(jq -n \
-            --arg model "$OPENAI_MODEL" \
-            --arg system "$system_prompt" \
-            --arg user "$task" \
-            '{
-                model: $model,
-                messages: [
-                    {role: "system", content: $system},
-                    {role: "user", content: $user}
-                ],
-                temperature: 0.7,
-                max_tokens: 4096
-            }')")
+    local prompt="${brain_context}
 
-    local content
-    content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
-
-    if [[ -z "$content" ]]; then
-        local error
-        error=$(echo "$response" | jq -r '.error.message // "Unknown error"')
-        echo "[Tier 1] ChatGPT error: $error — falling back to raw task" >&2
-        echo "$task" > "$output_file"
-    else
-        echo "$content" > "$output_file"
-    fi
-
-    cat "$output_file"
-}
-
-# --- Tier 2: Claude Verification ---
-
-tier2_claude() {
-    local reasoning="$1"
-    local task="$2"
-    local brain="$3"
-    local host="$4"
-    local output_file="$RUN_DIR/tier2-verification.md"
-
-    echo "[Tier 2] Claude verification..."
-
-    local verify_prompt="## Original Task
+## Task
 ${task}
 
-## Proposed Plan (from ChatGPT)
-${reasoning}
+## Instructions
+1. Analyze this task thoroughly
+2. Create a step-by-step plan to accomplish it
+3. Flag any risks or concerns
+4. Be specific about commands, files, and expected outcomes
 
-## Your Job
-Review this plan critically. Check for:
-1. Correctness — will this plan actually accomplish the task?
-2. Security — any risks, exposed secrets, unsafe commands?
-3. Completeness — anything missing or overlooked?
-4. Efficiency — any unnecessary steps?
+## Output Format
+## Plan
+<numbered steps>
 
-Output your verdict:
-- APPROVED: plan is good, proceed to execution
-- MODIFIED: plan needs changes (provide the corrected plan)
-- REJECTED: plan is fundamentally wrong (explain why)
+## Risks
+<any concerns>
 
-Format:
-## Verdict: APPROVED|MODIFIED|REJECTED
-## Notes: <your analysis>
-## Final Plan: <the plan to execute (original or modified)>"
+## Verdict: APPROVED
+## Execution Steps
+<the specific steps for Ollama to execute — keep these simple and concrete>"
 
     if [[ "$host" == "localhost" ]]; then
-        # Local mode — run claude directly
-        echo "$verify_prompt" | claude --print - > "$output_file" 2>&1
+        echo "$prompt" | claude --print > "$output_file" 2>&1
     else
-        # Remote mode — run claude on the helper
         ssh -o ConnectTimeout=10 "${SSH_USER}@${host}" \
             "cd ~/.device-link/workspace/${PROJECT} 2>/dev/null || cd ~/.device-link/workspace; \
-             echo $(printf '%q' "$verify_prompt") | claude --print -" \
+             claude --print $(printf '%q' "$prompt")" \
             > "$output_file" 2>&1
     fi
 
     cat "$output_file"
 }
 
-# --- Tier 3: Ollama Execution ---
+# --- Tier 2: Ollama (local execution — free) ---
 
-tier3_ollama() {
+tier2_ollama() {
     local plan="$1"
     local brain="$2"
     local host="$3"
-    local output_file="$RUN_DIR/tier3-execution.md"
+    local output_file="$RUN_DIR/tier2-ollama.md"
 
-    echo "[Tier 3] Ollama execution..."
+    echo "[Tier 2] Ollama execution..."
 
     local model
     if [[ "$brain" == "left" ]]; then
@@ -177,7 +118,6 @@ ${plan}"
     if [[ "$host" == "localhost" ]]; then
         endpoint="$OLLAMA_ENDPOINT"
     else
-        # Hit Ollama on the remote helper via Tailscale
         endpoint="http://${host}:11434"
     fi
 
@@ -196,10 +136,9 @@ ${plan}"
     content=$(echo "$response" | jq -r '.message.content // empty')
 
     if [[ -z "$content" ]]; then
-        echo "[Tier 3] Ollama error or empty response — falling back to Claude for execution" >&2
-        # Fallback: use Claude for execution instead
+        echo "[Tier 2] Ollama unavailable — Claude handling execution too" >&2
         if [[ "$host" == "localhost" ]]; then
-            echo "$exec_prompt" | claude --print - > "$output_file" 2>&1
+            echo "$exec_prompt" | claude --print > "$output_file" 2>&1
         else
             ssh -o ConnectTimeout=10 "${SSH_USER}@${host}" \
                 "cd ~/.device-link/workspace/${PROJECT} 2>/dev/null || cd ~/.device-link/workspace; \
@@ -221,23 +160,19 @@ echo " $(date)"
 echo "======================================"
 echo ""
 
-# Tier 1: ChatGPT reasons about the task
-REASONING=$(tier1_chatgpt "$TASK" "$BRAIN")
+# Tier 1: Claude reasons and plans
+PLAN=$(tier1_claude "$TASK" "$BRAIN" "$HOST")
 echo ""
 
-# Tier 2: Claude verifies the plan
-VERIFICATION=$(tier2_claude "$REASONING" "$TASK" "$BRAIN" "$HOST")
-echo ""
+# Extract execution steps for Ollama
+EXEC_STEPS=$(echo "$PLAN" | sed -n '/^## Execution Steps/,$p' | tail -n +2)
+if [[ -z "$EXEC_STEPS" ]]; then
+    EXEC_STEPS="$PLAN"
+fi
 
-# Check verdict
-VERDICT=$(echo "$VERIFICATION" | grep -i "^## Verdict:" | head -1 | sed 's/## Verdict: *//' | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
-
-if [[ "$VERDICT" == "REJECTED" ]]; then
-    echo "[Pipeline] Claude REJECTED the plan. Stopping."
-    echo ""
-    echo "$VERIFICATION"
-
-    # Save combined result
+# Check if Claude rejected
+if echo "$PLAN" | grep -qi "## Verdict:.*REJECTED"; then
+    echo "[Pipeline] Claude flagged issues. Stopping."
     RESULT_FILE="$RESULTS_DIR/${BRAIN}-${TIMESTAMP}.md"
     {
         echo "# Pipeline Result — ${BRAIN} brain"
@@ -246,49 +181,31 @@ if [[ "$VERDICT" == "REJECTED" ]]; then
         echo "## Timestamp: $(date)"
         echo ""
         echo "---"
-        echo "## Tier 1 — ChatGPT Reasoning"
-        echo "$REASONING"
-        echo ""
-        echo "---"
-        echo "## Tier 2 — Claude Verification"
-        echo "$VERIFICATION"
+        echo "$PLAN"
     } > "$RESULT_FILE"
-
-    echo ""
-    echo "Full result saved to: $RESULT_FILE"
+    echo "Result: $RESULT_FILE"
     exit 1
 fi
 
-# Extract the final plan (either original or modified by Claude)
-FINAL_PLAN=$(echo "$VERIFICATION" | sed -n '/^## Final Plan:/,$p' | tail -n +2)
-if [[ -z "$FINAL_PLAN" ]]; then
-    FINAL_PLAN="$REASONING"
-fi
-
-# Tier 3: Ollama executes
-EXECUTION=$(tier3_ollama "$FINAL_PLAN" "$BRAIN" "$HOST")
+# Tier 2: Ollama executes (free, local)
+EXECUTION=$(tier2_ollama "$EXEC_STEPS" "$BRAIN" "$HOST")
 echo ""
 
-# --- Save combined result ---
+# --- Save result ---
 
 RESULT_FILE="$RESULTS_DIR/${BRAIN}-${TIMESTAMP}.md"
 {
     echo "# Pipeline Result — ${BRAIN} brain"
     echo "## Task: ${TASK}"
     echo "## Status: COMPLETE"
-    echo "## Verdict: ${VERDICT:-APPROVED}"
     echo "## Timestamp: $(date)"
     echo ""
     echo "---"
-    echo "## Tier 1 — ChatGPT Reasoning"
-    echo "$REASONING"
+    echo "## Tier 1 — Claude Plan"
+    echo "$PLAN"
     echo ""
     echo "---"
-    echo "## Tier 2 — Claude Verification"
-    echo "$VERIFICATION"
-    echo ""
-    echo "---"
-    echo "## Tier 3 — Ollama Execution"
+    echo "## Tier 2 — Ollama Execution"
     echo "$EXECUTION"
 } > "$RESULT_FILE"
 

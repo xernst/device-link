@@ -9,9 +9,9 @@
 #   device-link results
 #
 # Modes (add before the task):
-#   --pipeline    3-tier: ChatGPT reasoning -> Claude verification -> Ollama execution [default]
-#   --direct      Skip pipeline, send task directly to Claude on helper
-#   --ollama      Send task directly to Ollama on helper (cheapest/fastest)
+#   --pipeline    Claude reasoning -> Ollama execution [default]
+#   --direct      Claude only (skip Ollama)
+#   --ollama      Ollama only (fastest, free, no Claude)
 #
 # Examples:
 #   device-link left "run tests"                  # uses pipeline (default)
@@ -25,9 +25,6 @@
 #     DEVICE_LINK_USER              — SSH username (defaults to current user)
 #     DEVICE_LINK_PROJECT           — Project path on helpers (defaults to cwd name)
 #     DEVICE_LINK_MODE              — Default mode: pipeline|direct|ollama
-#     OPENAI_API_KEY                — For ChatGPT reasoning (Tier 1)
-#     ANTHROPIC_API_KEY             — For Claude verification (Tier 2)
-#     DEVICE_LINK_OPENAI_MODEL      — OpenAI model (default: gpt-4o)
 #     DEVICE_LINK_OLLAMA_MODEL_LEFT — Ollama model for left brain
 #     DEVICE_LINK_OLLAMA_MODEL_RIGHT— Ollama model for right brain
 
@@ -246,7 +243,7 @@ case "$COMMAND" in
         echo "  device-link status                     Check helper status"
         echo "  device-link results                    Show recent results"
         echo ""
-        echo "Pipeline: ChatGPT (reasoning) -> Claude (verification) -> Ollama (execution)"
+        echo "Pipeline: Claude (reasoning) -> Ollama (execution, free)"
         echo ""
         echo "Config: ~/.device-link/config"
         ;;
