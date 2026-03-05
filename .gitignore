@@ -7,5 +7,5 @@ dist/
 build/
 .claude/
 
-# Never commit actual config with API keys
-config
+# Never commit actual config with API keys (shared/config.example is OK)
+/config.local

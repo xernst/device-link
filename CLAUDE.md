@@ -7,13 +7,28 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - **Right brain**: creative (design, research, planning, docs)
 - **Networking**: Tailscale mesh, mosh + tmux for persistence
 - **Trigger**: CLI (`device-link left/right/both`) or Claude Code slash commands (`/left-brain`, `/right-brain`)
-- **Model stack**: ChatGPT for primary reasoning, Claude for verification, Ollama (local open-source) for execution
+- **Model stack**: Claude (reasoning) → Ollama (execution, free)
+
+## Brain Toolkits
+
+### Left Brain (Analytical)
+**7 Agents**: code-reviewer, security-reviewer, tdd-guide, build-error-resolver, refactor-cleaner, database-reviewer, e2e-runner
+**8 Commands**: /code-review, /tdd, /build-fix, /verify, /test-coverage, /refactor-clean, /e2e, /last30days
+**4 Skills**: verification-loop, security-review, tdd-workflow, api-design
+**3 Rules**: security, agents, development-workflow
+
+### Right Brain (Creative)
+**6 Agents**: planner, architect, researcher, prd-creator, doc-updater, chief-of-staff
+**5 Commands**: /plan, /research, /prd, /architect, /last30days
+**3 Skills**: market-research, autonomous-loops, content-engine
+**3 Rules**: agents, development-workflow, creative-principles
 
 ## Key Files
 - `setup.sh` — run on each helper Mac (`./setup.sh left` or `./setup.sh right`)
+- `config/claude-code.sh` — installs full toolkit (agents, skills, rules, commands)
 - `trigger/trigger.sh` — CLI to send tasks from main Mac
-- `left-brain/profile.md` — left brain agent personality
-- `right-brain/profile.md` — right brain agent personality
+- `left-brain/profile.md` — left brain agent personality + agent roster
+- `right-brain/profile.md` — right brain agent personality + agent roster
 - `shared/healthcheck.sh` — verify helpers are alive
 
 ## Commands
