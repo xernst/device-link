@@ -6,3 +6,6 @@ node_modules/
 dist/
 build/
 .claude/
+
+# Never commit actual config with API keys
+config

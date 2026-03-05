@@ -8,12 +8,28 @@
 #   device-link status
 #   device-link results
 #
+# Modes (add before the task):
+#   --pipeline    3-tier: ChatGPT reasoning -> Claude verification -> Ollama execution [default]
+#   --direct      Skip pipeline, send task directly to Claude on helper
+#   --ollama      Send task directly to Ollama on helper (cheapest/fastest)
+#
+# Examples:
+#   device-link left "run tests"                  # uses pipeline (default)
+#   device-link left --direct "run tests"         # claude only
+#   device-link left --ollama "run tests"         # ollama only
+#
 # Configuration:
 #   Set these in ~/.device-link/config or as environment variables:
-#     DEVICE_LINK_LEFT_HOST    — Tailscale hostname/IP of left brain
-#     DEVICE_LINK_RIGHT_HOST   — Tailscale hostname/IP of right brain
-#     DEVICE_LINK_USER         — SSH username (defaults to current user)
-#     DEVICE_LINK_PROJECT      — Project path on helpers (defaults to cwd name)
+#     DEVICE_LINK_LEFT_HOST         — Tailscale hostname/IP of left brain
+#     DEVICE_LINK_RIGHT_HOST        — Tailscale hostname/IP of right brain
+#     DEVICE_LINK_USER              — SSH username (defaults to current user)
+#     DEVICE_LINK_PROJECT           — Project path on helpers (defaults to cwd name)
+#     DEVICE_LINK_MODE              — Default mode: pipeline|direct|ollama
+#     OPENAI_API_KEY                — For ChatGPT reasoning (Tier 1)
+#     ANTHROPIC_API_KEY             — For Claude verification (Tier 2)
+#     DEVICE_LINK_OPENAI_MODEL      — OpenAI model (default: gpt-4o)
+#     DEVICE_LINK_OLLAMA_MODEL_LEFT — Ollama model for left brain
+#     DEVICE_LINK_OLLAMA_MODEL_RIGHT— Ollama model for right brain
 
 set -euo pipefail
 
@@ -30,12 +46,13 @@ RIGHT_HOST="${DEVICE_LINK_RIGHT_HOST:-helper-right}"
 SSH_USER="${DEVICE_LINK_USER:-$(whoami)}"
 PROJECT="${DEVICE_LINK_PROJECT:-$(basename "$(pwd)")}"
 RESULTS_DIR="$HOME/.device-link/results"
+DEFAULT_MODE="${DEVICE_LINK_MODE:-pipeline}"
 
 mkdir -p "$RESULTS_DIR"
 
 # --- Functions ---
 
-send_task() {
+send_task_direct() {
     local host="$1"
     local brain="$2"
     local task="$3"
@@ -43,9 +60,8 @@ send_task() {
     timestamp="$(date +%Y%m%d-%H%M%S)"
     local result_file="$RESULTS_DIR/${brain}-${timestamp}.md"
 
-    echo "Sending to ${brain} brain ($host)..."
+    echo "[direct] Sending to ${brain} brain ($host)..."
 
-    # SSH into the helper, run claude in print mode, capture output
     ssh -o ConnectTimeout=5 "${SSH_USER}@${host}" \
         "cd ~/.device-link/workspace/${PROJECT} 2>/dev/null || cd ~/.device-link/workspace; \
          claude --print \"${task}\"" \
@@ -53,15 +69,73 @@ send_task() {
 
     local exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
-        echo "Done. Results saved to: $result_file"
+        echo "Done. Results: $result_file"
         echo ""
         cat "$result_file"
     else
         echo "Error: Failed to reach ${brain} brain at ${host}" >&2
-        echo "  Check: tailscale status" >&2
-        echo "  Check: ssh ${SSH_USER}@${host}" >&2
         return 1
     fi
+}
+
+send_task_ollama() {
+    local host="$1"
+    local brain="$2"
+    local task="$3"
+    local timestamp
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    local result_file="$RESULTS_DIR/${brain}-${timestamp}.md"
+
+    local model
+    if [[ "$brain" == "left" ]]; then
+        model="${DEVICE_LINK_OLLAMA_MODEL_LEFT:-qwen2.5-coder:7b}"
+    else
+        model="${DEVICE_LINK_OLLAMA_MODEL_RIGHT:-llama3.1:8b}"
+    fi
+
+    echo "[ollama] Sending to ${brain} brain ($host) using $model..."
+
+    local response
+    response=$(curl -s --max-time 120 "http://${host}:11434/api/chat" \
+        -d "$(jq -n \
+            --arg model "$model" \
+            --arg content "$task" \
+            '{model: $model, messages: [{role: "user", content: $content}], stream: false}')")
+
+    local content
+    content=$(echo "$response" | jq -r '.message.content // empty')
+
+    if [[ -n "$content" ]]; then
+        echo "$content" > "$result_file"
+        echo "Done. Results: $result_file"
+        echo ""
+        cat "$result_file"
+    else
+        echo "Error: Ollama returned empty response from ${host}" >&2
+        return 1
+    fi
+}
+
+send_task_pipeline() {
+    local host="$1"
+    local brain="$2"
+    local task="$3"
+
+    bash "$SCRIPT_DIR/pipeline.sh" "$brain" "$host" "$task"
+}
+
+send_task() {
+    local host="$1"
+    local brain="$2"
+    local task="$3"
+    local mode="$4"
+
+    case "$mode" in
+        pipeline)  send_task_pipeline "$host" "$brain" "$task" ;;
+        direct)    send_task_direct "$host" "$brain" "$task" ;;
+        ollama)    send_task_ollama "$host" "$brain" "$task" ;;
+        *)         send_task_pipeline "$host" "$brain" "$task" ;;
+    esac
 }
 
 show_status() {
@@ -94,12 +168,30 @@ show_results() {
         return
     fi
 
-    # Show the 5 most recent result files
     ls -t "$RESULTS_DIR"/*.md 2>/dev/null | head -5 | while read -r f; do
         echo "--- $(basename "$f") ---"
         head -20 "$f"
         echo ""
     done
+}
+
+# --- Parse mode flag ---
+
+parse_mode_and_task() {
+    local mode="$DEFAULT_MODE"
+    local task=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pipeline)  mode="pipeline"; shift ;;
+            --direct)    mode="direct"; shift ;;
+            --ollama)    mode="ollama"; shift ;;
+            *)           task="$1"; shift ;;
+        esac
+    done
+
+    echo "$mode"
+    echo "$task"
 }
 
 # --- Main ---
@@ -109,31 +201,30 @@ shift || true
 
 case "$COMMAND" in
     left)
-        TASK="${1:-}"
+        read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link left \"<task description>\"" >&2
+            echo "Usage: device-link left [--pipeline|--direct|--ollama] \"<task>\"" >&2
             exit 1
         fi
-        send_task "$LEFT_HOST" "left" "$TASK"
+        send_task "$LEFT_HOST" "left" "$TASK" "$MODE"
         ;;
     right)
-        TASK="${1:-}"
+        read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link right \"<task description>\"" >&2
+            echo "Usage: device-link right [--pipeline|--direct|--ollama] \"<task>\"" >&2
             exit 1
         fi
-        send_task "$RIGHT_HOST" "right" "$TASK"
+        send_task "$RIGHT_HOST" "right" "$TASK" "$MODE"
         ;;
     both)
-        TASK="${1:-}"
+        read -r MODE TASK <<< "$(parse_mode_and_task "$@")"
         if [[ -z "$TASK" ]]; then
-            echo "Usage: device-link both \"<task description>\"" >&2
+            echo "Usage: device-link both [--pipeline|--direct|--ollama] \"<task>\"" >&2
             exit 1
         fi
-        # Run both in parallel
-        send_task "$LEFT_HOST" "left" "$TASK" &
+        send_task "$LEFT_HOST" "left" "$TASK" "$MODE" &
         LEFT_PID=$!
-        send_task "$RIGHT_HOST" "right" "$TASK" &
+        send_task "$RIGHT_HOST" "right" "$TASK" "$MODE" &
         RIGHT_PID=$!
         wait $LEFT_PID $RIGHT_PID
         ;;
@@ -147,11 +238,15 @@ case "$COMMAND" in
         echo "Device Link — Trigger tasks on helper machines"
         echo ""
         echo "Usage:"
-        echo "  device-link left \"<task>\"    Send task to left brain (analytical)"
-        echo "  device-link right \"<task>\"   Send task to right brain (creative)"
-        echo "  device-link both \"<task>\"    Send task to both in parallel"
-        echo "  device-link status           Check helper status"
-        echo "  device-link results          Show recent results"
+        echo "  device-link left \"<task>\"              Pipeline mode (default)"
+        echo "  device-link left --direct \"<task>\"     Claude only"
+        echo "  device-link left --ollama \"<task>\"     Ollama only (fastest)"
+        echo "  device-link right \"<task>\"             Pipeline mode (default)"
+        echo "  device-link both \"<task>\"              Both brains in parallel"
+        echo "  device-link status                     Check helper status"
+        echo "  device-link results                    Show recent results"
+        echo ""
+        echo "Pipeline: ChatGPT (reasoning) -> Claude (verification) -> Ollama (execution)"
         echo ""
         echo "Config: ~/.device-link/config"
         ;;
