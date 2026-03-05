@@ -8,7 +8,7 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - **Networking**: Tailscale mesh, mosh + tmux for persistence
 - **Trigger**: CLI (`device-link left/right/both`), Claude Code slash commands (`/left-brain`, `/right-brain`), or Telegram bot
 - **Model stack**: Claude (reasoning) → Ollama (execution, free)
-- **Gateway**: OpenClaw on each helper (always-on API, Tailscale-bound)
+- **Gateway**: OpenClaw on each helper (always-on API, Tailscale-bound, heartbeat + cron + memory flush)
 - **Browser**: Pinchtab on each helper (HTTP API for browser control)
 - **Notifications**: Telegram bot with Claude review gate before delivery
 - **Second Brain**: Obsidian vault at `~/Documents/second-brain/` (task ledger + knowledge base)
@@ -79,6 +79,14 @@ device-link show-queue                    # show pending tasks
 /token-dashboard           Show token usage across all configs
 /token-audit               Audit and optimize token usage
 ```
+
+## OpenClaw Overnight System
+Each helper runs 4 systems that make OpenClaw useful overnight:
+
+1. **Heartbeat** — every 30 min, 8am-11pm. Checks for failed crons, disk, Ollama, Pinchtab. Quiet outside hours.
+2. **Memory flush** — before every context compaction, writes learnings to `~/.openclaw/memory/daily/YYYY-MM-DD.md`. Consolidated nightly.
+3. **Cron jobs** — heavy tasks (result scanning, memory consolidation) run in isolated sessions. Don't bloat main context.
+4. **Fallback alerts** — heartbeat checks `~/.device-link/cron/last-run.log` for failed jobs. Alerts via Telegram before they stack up.
 
 ## Review Gate
 Every task result goes through a Claude review before Telegram delivery. The review is a 2-3 sentence executive summary flagging any issues. Sent to Telegram before the completion notification.
