@@ -523,6 +523,9 @@ case "$COMMAND" in
     show-queue)
         show_queue
         ;;
+    deploy)
+        bash "$SCRIPT_DIR/../deploy.sh" "${1:-}"
+        ;;
     digest)
         bash "$SCRIPT_DIR/digest.sh" "${1:-}"
         ;;
@@ -542,6 +545,7 @@ case "$COMMAND" in
         echo "  device-link attach <left|right>        Attach to brain tmux session"
         echo "  device-link queue <left|right> \"task\"   Fire-and-forget background task"
         echo "  device-link show-queue                 Show pending background tasks"
+        echo "  device-link deploy <left|right|all>    Deploy to helper(s)"
         echo "  device-link digest [YYYY-MM-DD]        Generate daily digest"
         echo ""
         echo "Modes:"

@@ -45,6 +45,7 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - `telegram/notify-telegram.sh` — push notification helper
 - `left-brain/profile.md` — left brain agent personality + agent roster
 - `right-brain/profile.md` — right brain agent personality + agent roster
+- `deploy.sh` — remote deploy from main Mac (`./deploy.sh left`, `./deploy.sh right`, `./deploy.sh all`)
 - `shared/healthcheck.sh` — verify helpers (SSH, tmux, Ollama, Claude, OpenClaw, Pinchtab, GWS)
 
 ## Commands
@@ -56,6 +57,11 @@ device-link left --ollama "run tests"     # ollama only (fastest)
 device-link left --openclaw "run tests"   # via openclaw gateway
 device-link right "design auth"           # send to right brain
 device-link both "review PR"              # send to both
+
+# Deployment
+device-link deploy left                   # deploy to left brain helper
+device-link deploy right                  # deploy to right brain helper
+device-link deploy all                    # deploy to both helpers
 
 # Monitoring
 device-link status                        # check helper health

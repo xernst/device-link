@@ -8,6 +8,7 @@ alias dl-right='device-link right'
 alias dl-both='device-link both'
 alias dl-status='device-link status'
 alias dl-results='device-link results'
+alias dl-deploy='device-link deploy'
 
 # Helper management
 alias dl-attach-left='mosh helper-left -- tmux attach -t left-brain'
