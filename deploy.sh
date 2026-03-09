@@ -45,7 +45,7 @@ check_ssh() {
     local label="$2"
 
     printf "  Checking SSH to %s (%s)... " "$label" "$host"
-    if ssh -o ConnectTimeout=5 -o BatchMode=yes "${SSH_USER}@${host}" "echo ok" &>/dev/null; then
+    if ssh -o ConnectTimeout=5 -o BatchMode=yes "${host}" "echo ok" &>/dev/null; then
         echo "connected."
         return 0
     else
@@ -79,11 +79,11 @@ deploy_to() {
     echo "  Syncing device-link repo..."
 
     local has_git
-    has_git=$(ssh -o ConnectTimeout=5 "${SSH_USER}@${host}" "command -v git &>/dev/null && echo yes || echo no")
+    has_git=$(ssh -o ConnectTimeout=5 "${host}" "command -v git &>/dev/null && echo yes || echo no")
 
     if [[ "$has_git" == "yes" ]]; then
         # Git available — clone or pull
-        ssh -o ConnectTimeout=5 "${SSH_USER}@${host}" bash -s <<'REMOTE_GIT'
+        ssh -o ConnectTimeout=5 "${host}" bash -s <<'REMOTE_GIT'
             set -euo pipefail
             REPO_URL="https://github.com/xernst/device-link.git"
             REMOTE_DIR="$HOME/device-link"
@@ -115,14 +115,14 @@ REMOTE_GIT
 
     # Step 3: Set permissions
     echo "  Setting permissions..."
-    ssh -o ConnectTimeout=5 "${SSH_USER}@${host}" \
+    ssh -o ConnectTimeout=5 "${host}" \
         "chmod +x ~/device-link/setup.sh ~/device-link/config/*.sh ~/device-link/left-brain/start.sh ~/device-link/right-brain/start.sh ~/device-link/trigger/*.sh ~/device-link/shared/healthcheck.sh"
 
     # Step 4: Run setup.sh
     echo ""
     echo "  Running setup.sh ${brain}..."
     echo "  ----------------------------------------"
-    ssh -o ConnectTimeout=5 -t "${SSH_USER}@${host}" \
+    ssh -o ConnectTimeout=5 -t "${host}" \
         "cd ~/device-link && ./setup.sh ${brain}" 2>&1
     local rc=$?
     echo "  ----------------------------------------"

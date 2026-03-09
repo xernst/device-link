@@ -78,7 +78,7 @@ send_task_direct() {
 
     echo "[direct] Sending to ${brain} brain ($host)..."
 
-    ssh -o ConnectTimeout=5 "${SSH_USER}@${host}" \
+    ssh -o ConnectTimeout=5 "${host}" \
         "cd ~/.device-link/workspace/${PROJECT} 2>/dev/null || cd ~/.device-link/workspace; \
          claude --print \"${task}\"" \
         > "$result_file" 2>&1
@@ -308,9 +308,9 @@ show_status() {
         local host="${brain_host##*:}"
 
         printf "%-12s " "${brain} brain:"
-        if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "tmux has-session -t ${brain}-brain 2>/dev/null" 2>/dev/null; then
+        if ssh -o ConnectTimeout=3 "${host}" "tmux has-session -t ${brain}-brain 2>/dev/null" 2>/dev/null; then
             echo "ONLINE (tmux session active)"
-        elif ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "echo ok" &>/dev/null; then
+        elif ssh -o ConnectTimeout=3 "${host}" "echo ok" &>/dev/null; then
             echo "REACHABLE (but no tmux session)"
         else
             echo "OFFLINE"
@@ -344,7 +344,7 @@ pull_results() {
         local host="${brain_host##*:}"
 
         printf "%-12s " "${brain} brain:"
-        if ssh -o ConnectTimeout=3 "${SSH_USER}@${host}" "test -d ~/.device-link/results" &>/dev/null; then
+        if ssh -o ConnectTimeout=3 "${host}" "test -d ~/.device-link/results" &>/dev/null; then
             rsync -az --ignore-existing \
                 "${SSH_USER}@${host}:~/.device-link/results/" \
                 "$RESULTS_DIR/" 2>/dev/null
@@ -376,10 +376,10 @@ attach_brain() {
 
     echo "Attaching to ${brain} brain ($host)..."
     if command -v mosh &>/dev/null; then
-        exec mosh "${SSH_USER}@${host}" -- tmux attach -t "${brain}-brain" 2>/dev/null \
-            || exec mosh "${SSH_USER}@${host}" -- tmux new -s "${brain}-brain"
+        exec mosh "${host}" -- tmux attach -t "${brain}-brain" 2>/dev/null \
+            || exec mosh "${host}" -- tmux new -s "${brain}-brain"
     else
-        exec ssh "${SSH_USER}@${host}" -t "tmux attach -t ${brain}-brain 2>/dev/null \
+        exec ssh "${host}" -t "tmux attach -t ${brain}-brain 2>/dev/null \
             || tmux new -s ${brain}-brain"
     fi
 }
