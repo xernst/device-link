@@ -23,7 +23,7 @@ mkdir -p "$DAILY_DIR"
 
 # Find all task entries for the target date
 MATCHING_FILES=()
-for f in "$LEDGER_DIR"/${TARGET_PREFIX}*.md 2>/dev/null; do
+for f in "$LEDGER_DIR"/${TARGET_PREFIX}*.md; do
     [[ -f "$f" ]] && MATCHING_FILES+=("$f")
 done
 
@@ -40,24 +40,30 @@ FAILED=0
 TASKS_LIST=""
 
 for f in "${MATCHING_FILES[@]}"; do
-    brain=$(grep "^brain:" "$f" | head -1 | sed 's/brain: *//')
-    task=$(grep "^task:" "$f" | head -1 | sed 's/task: *"//;s/"$//')
-    status=$(grep "^status:" "$f" | head -1 | sed 's/status: *//')
-    mode=$(grep "^mode:" "$f" | head -1 | sed 's/mode: *//')
+    brain=$(grep "^brain:" "$f" 2>/dev/null | head -1 | sed 's/brain: *//' || true)
+    task=$(grep "^task:" "$f" 2>/dev/null | head -1 | sed 's/task: *"//;s/"$//' || true)
+    status=$(grep "^status:" "$f" 2>/dev/null | head -1 | sed 's/status: *//' || true)
+    mode=$(grep "^mode:" "$f" 2>/dev/null | head -1 | sed 's/mode: *//' || true)
+
+    # Skip empty/corrupt entries
+    [[ -z "$brain" ]] && continue
 
     if [[ "$brain" == "left" ]]; then
-        ((LEFT_COUNT++))
+        LEFT_COUNT=$((LEFT_COUNT + 1))
     else
-        ((RIGHT_COUNT++))
+        RIGHT_COUNT=$((RIGHT_COUNT + 1))
     fi
     if [[ "$status" == "completed" ]]; then
-        ((COMPLETED++))
+        COMPLETED=$((COMPLETED + 1))
     else
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 
-    local_time=$(basename "$f" .md | cut -d- -f1 | sed 's/\(....\)\(..\)\(..\)\(..\)\(..\)\(..\)/\4:\5/')
-    TASKS_LIST+="| ${local_time} | ${brain} | ${mode} | ${task} | ${status} |\n"
+    # Extract HH:MM from filename like 20260309-183136-left.md
+    local_ts=$(basename "$f" .md | cut -d- -f2)
+    local_time="${local_ts:0:2}:${local_ts:2:2}"
+    TASKS_LIST+="| ${local_time} | ${brain} | ${mode} | ${task} | ${status} |
+"
 done
 
 DIGEST_FILE="$DAILY_DIR/${TARGET_DATE}.md"
@@ -85,7 +91,7 @@ tasks_failed: ${FAILED}
 
 | Time | Brain | Mode | Task | Status |
 |------|-------|------|------|--------|
-$(echo -e "$TASKS_LIST")
+$(printf '%s' "$TASKS_LIST")
 
 EOF
 
