@@ -9,6 +9,7 @@ import re
 import json
 import asyncio
 import logging
+import sqlite3
 from pathlib import Path
 from datetime import datetime, time
 from functools import wraps
@@ -33,11 +34,177 @@ LEFT_HOST = os.environ.get("DEVICE_LINK_LEFT_HOST", "helper-left")
 RIGHT_HOST = os.environ.get("DEVICE_LINK_RIGHT_HOST", "helper-right")
 DEFAULT_ROUNDS = int(os.environ.get("DEVICE_LINK_COLLAB_ROUNDS", "2"))
 LEDGER_DIR = Path.home() / "Documents" / "second-brain" / "_ledger" / "tasks"
+MEMORY_DIR = Path.home() / ".device-link" / "memory"
+MAILBOX_DIR = Path.home() / ".device-link" / "mailbox"
+SKILLS_DIR = Path.home() / ".device-link" / "skills"
+VAULT_DIR = Path.home() / "Documents" / "second-brain"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("device-link")
 
-# --- Conversation memory (last 20 exchanges) ---
+# --- Persistent Memory (SQLite FTS5) ---
+MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+MAILBOX_DIR.mkdir(parents=True, exist_ok=True)
+SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+MEMORY_DB = MEMORY_DIR / "conversations.db"
+
+
+def init_memory_db():
+    """Initialize SQLite database with FTS5 for conversation search."""
+    conn = sqlite3.connect(str(MEMORY_DB))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            session_id TEXT,
+            route TEXT
+        )
+    """)
+    # FTS5 virtual table for full-text search
+    try:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+            USING fts5(content, role, timestamp, content='messages', content_rowid='id')
+        """)
+        # Triggers to keep FTS in sync
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content, role, timestamp)
+                VALUES (new.id, new.content, new.role, new.timestamp);
+            END
+        """)
+    except sqlite3.OperationalError:
+        pass  # FTS5 not available, fall back to LIKE
+    conn.commit()
+    conn.close()
+
+
+init_memory_db()
+SESSION_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def save_message(role, content, route=None):
+    """Persist a message to the memory database."""
+    try:
+        conn = sqlite3.connect(str(MEMORY_DB))
+        conn.execute(
+            "INSERT INTO messages (role, content, timestamp, session_id, route) VALUES (?, ?, ?, ?, ?)",
+            (role, content[:5000], datetime.now().isoformat(), SESSION_ID, route or ""),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("Memory save failed: %s", e)
+
+
+def search_memory(query, limit=5):
+    """Search past conversations using FTS5 or LIKE fallback."""
+    try:
+        conn = sqlite3.connect(str(MEMORY_DB))
+        # Try FTS5 first
+        try:
+            rows = conn.execute(
+                "SELECT m.role, m.content, m.timestamp FROM messages m "
+                "JOIN messages_fts f ON m.id = f.rowid "
+                "WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
+                (query, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # LIKE fallback
+            rows = conn.execute(
+                "SELECT role, content, timestamp FROM messages "
+                "WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?",
+                (f"%{query}%", limit),
+            ).fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error("Memory search failed: %s", e)
+        return []
+
+
+def get_recent_memory(limit=10):
+    """Get recent messages from memory DB (supplements in-memory deque)."""
+    try:
+        conn = sqlite3.connect(str(MEMORY_DB))
+        rows = conn.execute(
+            "SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return list(reversed(rows))  # chronological order
+    except Exception:
+        return []
+
+
+# --- Inter-Agent Mailbox ---
+def send_mail(from_brain, to_brain, message):
+    """Send a message from one brain to another via file-based mailbox."""
+    mailfile = MAILBOX_DIR / f"{from_brain}-to-{to_brain}.md"
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    entry = f"\n## [{timestamp}] From {from_brain}\n{message}\n"
+    with open(mailfile, "a") as f:
+        f.write(entry)
+
+
+def read_mail(brain):
+    """Read all messages addressed to a brain."""
+    messages = []
+    for f in MAILBOX_DIR.glob(f"*-to-{brain}.md"):
+        content = f.read_text().strip()
+        if content:
+            sender = f.stem.split("-to-")[0]
+            messages.append({"from": sender, "content": content})
+    return messages
+
+
+def clear_mail(brain):
+    """Clear mailbox for a brain after reading."""
+    for f in MAILBOX_DIR.glob(f"*-to-{brain}.md"):
+        f.write_text("")
+
+
+# --- Self-Installing Skills ---
+def load_custom_skills():
+    """Load user-created skills from ~/.device-link/skills/."""
+    skills = {}
+    for f in SKILLS_DIR.glob("*.md"):
+        try:
+            content = f.read_text()
+            name = f.stem
+            # Parse frontmatter
+            brain = "left"  # default
+            trigger = name
+            description = ""
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end > 0:
+                    header = content[3:end]
+                    for line in header.strip().split("\n"):
+                        if line.startswith("brain:"):
+                            brain = line.split(":")[1].strip()
+                        elif line.startswith("trigger:"):
+                            trigger = line.split(":")[1].strip()
+                        elif line.startswith("description:"):
+                            description = line.split(":", 1)[1].strip()
+                    content = content[end + 3:].strip()
+            skills[name] = {
+                "brain": brain,
+                "trigger": trigger,
+                "description": description,
+                "prompt": content,
+            }
+        except Exception as e:
+            logger.error("Failed to load skill %s: %s", f.name, e)
+    return skills
+
+
+CUSTOM_SKILLS = load_custom_skills()
+
+
+# --- In-memory conversation buffer ---
 conversation_history = deque(maxlen=20)
 
 # --- System context ---
@@ -60,6 +227,7 @@ You are the central brain of Device Link, a personal AI command center. You're s
 
 ## What You Can Do
 - Answer questions directly (you're smart and have context)
+- Search the web for anything — competitors, tools, APIs, articles, tweets, reddit posts
 - Dispatch tasks to left brain (analytical), right brain (creative), or start a collaboration (both)
 - Check swarm status and recent results
 - Help with Josh's work projects, coding, planning, and decision-making
@@ -70,6 +238,9 @@ You are the central brain of Device Link, a personal AI command center. You're s
 - If a task needs the brains, say so and route it
 - If you can answer it yourself, just answer it — don't overthink routing
 - Remember what Josh said earlier in the conversation
+- NEVER say "I can't search the internet" — you CAN search. Just do it.
+- If Josh asks you to find, search, look up, or compare anything online — search for it
+- Be proactive — if a question would benefit from a web search, do the search
 
 ## Recent Results Summary
 {recent_results}
@@ -179,15 +350,52 @@ def build_system_context():
 
 
 def build_prompt_with_history(user_message):
-    """Build prompt including conversation history and system context."""
+    """Build prompt with conversation history, persistent memory, and system context."""
     system = build_system_context()
+
+    # In-memory recent conversation (fast)
     history_lines = []
     for role, msg in conversation_history:
         prefix = "Josh" if role == "user" else "Assistant"
         truncated = msg[:300] + "..." if len(msg) > 300 else msg
         history_lines.append(f"{prefix}: {truncated}")
 
+    # Search persistent memory for relevant past context
+    memory_context = ""
+    try:
+        # Search for messages related to current query
+        keywords = " ".join(user_message.split()[:8])  # first 8 words
+        memories = search_memory(keywords, limit=3)
+        if memories:
+            mem_lines = []
+            for role, content, ts in memories:
+                date_str = ts[:10] if ts else ""
+                prefix = "Josh" if role == "user" else "Bot"
+                mem_lines.append(f"[{date_str}] {prefix}: {content[:200]}")
+            memory_context = "\n## Relevant Past Conversations\n" + "\n".join(mem_lines)
+    except Exception:
+        pass
+
+    # Custom skills context
+    skills_context = ""
+    if CUSTOM_SKILLS:
+        skill_list = ", ".join(f"/{k}" for k in CUSTOM_SKILLS)
+        skills_context = f"\n## Custom Skills Available\n{skill_list}"
+
+    # Mailbox context
+    mail_context = ""
+    mail = read_mail("main")
+    if mail:
+        mail_lines = [f"From {m['from']}:\n{m['content'][:200]}" for m in mail[:3]]
+        mail_context = "\n## Unread Messages from Brains\n" + "\n---\n".join(mail_lines)
+
     parts = [system]
+    if memory_context:
+        parts.append(memory_context)
+    if skills_context:
+        parts.append(skills_context)
+    if mail_context:
+        parts.append(mail_context)
     if history_lines:
         parts.append("\n## Recent Conversation\n" + "\n".join(history_lines[-10:]))
     parts.append(f"\n## Current Message from Josh\n{user_message}")
@@ -398,7 +606,143 @@ def get_recent_results(count=5):
     return sorted(RESULTS_DIR.glob("*.md"), key=os.path.getmtime, reverse=True)[:count]
 
 
-# --- Fast keyword router (NO LLM) ---
+# --- Web search ---
+async def web_search(query, max_results=5):
+    """Search the web using DuckDuckGo. Returns list of {title, href, body}."""
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        loop = asyncio.get_event_loop()
+        def _search():
+            with DDGS() as ddgs:
+                return list(ddgs.text(query, max_results=max_results))
+        results = await loop.run_in_executor(None, _search)
+        return results
+    except Exception as e:
+        logger.error("Web search failed: %s", e)
+        return []
+
+
+async def extract_search_query(user_message):
+    """Use LLM + conversation history to turn a natural message into a good search query."""
+    # Build context from recent conversation
+    recent = []
+    for role, msg in list(conversation_history)[-8:]:
+        recent.append(f"{role}: {msg[:200]}")
+    context = "\n".join(recent) if recent else "(no prior context)"
+
+    prompt = (
+        "You are a search query optimizer. The user is Josh, working on an AI recruiting screening "
+        "assistant for salon/spa locations in Naples. He uses a multi-Mac AI swarm called Device Link.\n\n"
+        "Given his message and recent conversation, extract 1-3 focused web search queries.\n\n"
+        "Rules:\n"
+        "- Return ONLY the search queries, one per line\n"
+        "- If they mention twitter/X, add site:x.com to one query\n"
+        "- If they mention reddit, add site:reddit.com to one query\n"
+        "- Use conversation context to understand WHAT they're searching about\n"
+        "- Strip filler words like 'search for', 'look up', 'find me'\n"
+        "- Make queries specific and likely to return useful results\n"
+        "- If the message is vague (like 'similar use cases'), use context to make it specific\n\n"
+        f"Recent conversation:\n{context}\n\n"
+        f"User message: {user_message[:300]}\n\n"
+        "Search queries (one per line):"
+    )
+    try:
+        raw = await ask_llm(prompt, timeout=20)
+        # Clean up — take the first query line
+        lines = [l.strip().strip('"').strip("'").lstrip("0123456789.-) ")
+                 for l in raw.strip().split("\n") if l.strip()]
+        # Filter out meta-text
+        queries = [l for l in lines if len(l) > 5 and not l.lower().startswith(("search quer", "here", "note:"))]
+        return queries[0] if queries else user_message
+    except Exception:
+        return user_message
+
+
+async def search_and_summarize(query, update, raw_query=False):
+    """Search the web, then summarize results with LLM. Uses multi-query when needed."""
+    # Extract proper search queries unless already refined
+    if not raw_query:
+        refined = await extract_search_query(query)
+        # extract_search_query returns a string (first query)
+        queries = [refined]
+    else:
+        queries = [query]
+
+    # Run searches
+    all_results = []
+    for q in queries[:3]:  # max 3 queries
+        await update.message.reply_text(f"🔍 {q}")
+        results = await web_search(q, max_results=5)
+        all_results.extend(results)
+
+    # Deduplicate by URL
+    seen_urls = set()
+    unique_results = []
+    for r in all_results:
+        url = r.get("href", "")
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique_results.append(r)
+
+    if not unique_results:
+        await update.message.reply_text("No results found. Try different keywords.")
+        return
+
+    # Format results for LLM
+    formatted = []
+    for i, r in enumerate(unique_results[:10], 1):
+        title = r.get("title", "")
+        url = r.get("href", "")
+        snippet = r.get("body", "")
+        formatted.append(f"{i}. {title}\n   {url}\n   {snippet}")
+
+    results_text = "\n\n".join(formatted)
+
+    # Build context from conversation
+    recent = []
+    for role, msg in list(conversation_history)[-4:]:
+        recent.append(f"{role}: {msg[:150]}")
+    conv_context = "\n".join(recent) if recent else ""
+
+    # Have LLM analyze and summarize results with full context
+    summary_prompt = (
+        f"The user (Josh) asked: {query[:300]}\n"
+        f"Queries searched: {', '.join(queries[:3])}\n\n"
+        "Josh is building an AI recruiting screening assistant for salon/spa businesses. "
+        "He's looking for relevant tools, competitors, approaches, and use cases.\n\n"
+    )
+    if conv_context:
+        summary_prompt += f"Conversation context:\n{conv_context}\n\n"
+    summary_prompt += (
+        f"Web search results:\n{results_text[:3000]}\n\n"
+        "Give Josh a useful, direct answer based on these results:\n"
+        "- Key findings (3-5 bullet points)\n"
+        "- Specific product names, companies, pricing if found\n"
+        "- Most relevant URLs (max 3)\n"
+        "- How this relates to his project\n"
+        "- Be direct and opinionated — tell him what's worth looking at"
+    )
+    summary = await ask_llm(summary_prompt, timeout=60)
+    if summary and not summary.startswith("("):
+        await update.message.reply_text(truncate(summary, 4000))
+        search_entry = f"[search: {', '.join(queries)}]\n{summary}"
+        conversation_history.append(("assistant", search_entry))
+        save_message("assistant", search_entry, route="search")
+    else:
+        # Fallback: just show raw results
+        await update.message.reply_text("📋 Results:\n\n" + truncate(results_text, 3800))
+
+
+SEARCH_KEYWORDS = [
+    "search for", "search the", "look up", "google", "find me",
+    "search twitter", "search reddit", "search online", "search web",
+    "what are people saying", "find similar", "find examples",
+    "comparable", "competitors", "alternatives to",
+]
+
 LEFT_KEYWORDS = [
     "debug", "test", "fix bug", "analyze code", "security audit",
     "benchmark", "profile", "lint", "code review", "refactor",
@@ -411,10 +755,10 @@ RIGHT_KEYWORDS = [
 
 
 def classify(text):
-    """Instant keyword-based routing. No LLM needed."""
+    """Fast keyword routing with search intent detection."""
     lower = text.strip().lower()
 
-    # Explicit prefix overrides
+    # Explicit prefix overrides (highest priority)
     if lower.startswith("left:"):
         return "left", text[5:].strip()
     if lower.startswith("right:"):
@@ -425,6 +769,11 @@ def classify(text):
                 return "collab", text[len(prefix):].strip()
     if lower.startswith("project:"):
         return "project", text[8:].strip()
+
+    # Search keywords — detect web search intent
+    for kw in SEARCH_KEYWORDS:
+        if kw in lower:
+            return "search", text
 
     # Brain keywords
     for kw in LEFT_KEYWORDS:
@@ -528,10 +877,33 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         + "  /journal  - journal entry\n"
         + "  /digest   - generate task digest\n"
         + "  /connections - find Galaxy links\n\n"
-        + "All skills take an argument:\n"
+        + "Web:\n"
+        + "  /search <query> - search the web\n"
+        + "  (or just say 'search for...')\n\n"
+        + "Memory:\n"
+        + "  /remember <query> - search past conversations\n\n"
+        + "Mailbox:\n"
+        + "  /mail - read messages from brains\n"
+        + "  /mail left <msg> - send to left brain\n\n"
+        + "Custom Skills:\n"
+        + "  /skills - list custom skills\n"
+        + "  /newskill - create a reusable skill\n\n"
+        + "All commands take an argument:\n"
         + "  /plan build user auth system\n"
-        + "  /research voice AI APIs for recruiting"
+        + "  /search voice AI recruiting APIs\n"
+        + "  /remember that recruiting project"
     )
+
+
+# --- Web search command ---
+@authorized
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search the web from Telegram."""
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("Usage: /search <query>\nExample: /search voice AI recruiting APIs")
+        return
+    await search_and_summarize(query, update, raw_query=True)
 
 
 # --- Brain skill commands ---
@@ -739,6 +1111,145 @@ async def cmd_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Note saved: {fname}")
 
 
+# --- Memory & Mailbox & Skills Commands ---
+@authorized
+async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search past conversations."""
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("Usage: /remember <what to search for>\nSearches all past conversations.")
+        return
+    results = search_memory(query, limit=8)
+    if not results:
+        await update.message.reply_text("No memories found for: " + query)
+        return
+    lines = []
+    for role, content, ts in results:
+        date_str = ts[:10] if ts else "?"
+        prefix = "Josh" if role == "user" else "Bot"
+        lines.append(f"[{date_str}] {prefix}: {content[:150]}")
+    await update.message.reply_text("🧠 Memories:\n\n" + truncate("\n\n".join(lines), 3800))
+
+
+@authorized
+async def cmd_mail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check the inter-agent mailbox."""
+    args = " ".join(context.args) if context.args else ""
+
+    # Send mail: /mail left Hey, check the test results
+    if args and args.split()[0] in ("left", "right"):
+        parts = args.split(None, 1)
+        target = parts[0]
+        message = parts[1] if len(parts) > 1 else ""
+        if not message:
+            await update.message.reply_text(f"Usage: /mail {target} <message>")
+            return
+        send_mail("main", target, message)
+        await update.message.reply_text(f"📬 Mail sent to {target} brain.")
+        return
+
+    # Read mail
+    all_mail = read_mail("main")
+    if not all_mail:
+        await update.message.reply_text("📭 No mail. Brains haven't sent any messages.")
+        return
+    lines = []
+    for m in all_mail:
+        lines.append(f"From {m['from']}:\n{m['content'][:500]}")
+    await update.message.reply_text("📬 Mailbox:\n\n" + truncate("\n---\n".join(lines), 3800))
+
+    # Clear after reading
+    if args == "clear":
+        clear_mail("main")
+        await update.message.reply_text("Mailbox cleared.")
+
+
+@authorized
+async def cmd_newskill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create a new reusable skill."""
+    args = " ".join(context.args) if context.args else ""
+    if not args or "|" not in args:
+        await update.message.reply_text(
+            "Usage: /newskill name | brain | description | prompt\n\n"
+            "Example:\n"
+            "/newskill competitor-analysis | right | Analyze competitors for a product | "
+            "Research and analyze the top 5 competitors for the given product. "
+            "Include pricing, features, market position, strengths, weaknesses."
+        )
+        return
+
+    parts = [p.strip() for p in args.split("|")]
+    if len(parts) < 4:
+        await update.message.reply_text("Need 4 parts separated by |: name | brain | description | prompt")
+        return
+
+    name, brain, description, prompt = parts[0], parts[1], parts[2], "|".join(parts[3:])
+
+    # Validate
+    safe_name = re.sub(r'[^\w-]', '', name.lower().replace(' ', '-'))[:30]
+    if brain not in ("left", "right"):
+        brain = "right"
+
+    # Write skill file
+    skill_path = SKILLS_DIR / f"{safe_name}.md"
+    skill_content = (
+        f"---\n"
+        f"brain: {brain}\n"
+        f"trigger: {safe_name}\n"
+        f"description: {description}\n"
+        f"created: {datetime.now().strftime('%Y-%m-%d')}\n"
+        f"---\n\n"
+        f"{prompt}\n"
+    )
+    skill_path.write_text(skill_content)
+
+    # Reload skills
+    global CUSTOM_SKILLS
+    CUSTOM_SKILLS = load_custom_skills()
+
+    await update.message.reply_text(
+        f"✅ Skill '{safe_name}' created!\n"
+        f"Brain: {brain}\n"
+        f"Use: /{safe_name} <task>\n\n"
+        f"Prompt: {prompt[:200]}..."
+    )
+
+
+@authorized
+async def cmd_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all custom skills."""
+    if not CUSTOM_SKILLS:
+        await update.message.reply_text(
+            "No custom skills yet.\n"
+            "Create one: /newskill name | brain | description | prompt"
+        )
+        return
+    lines = ["📋 Custom Skills:\n"]
+    for name, info in CUSTOM_SKILLS.items():
+        lines.append(f"/{name} — {info['description']} ({info['brain']} brain)")
+    await update.message.reply_text("\n".join(lines))
+
+
+@authorized
+async def handle_custom_skill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle dynamically created skill commands."""
+    cmd = update.message.text.split()[0].lstrip("/").split("@")[0]
+    if cmd not in CUSTOM_SKILLS:
+        return
+    skill = CUSTOM_SKILLS[cmd]
+    args = " ".join(context.args) if context.args else ""
+    if not args:
+        await update.message.reply_text(f"Usage: /{cmd} <task>\n{skill['description']}")
+        return
+
+    brain = skill["brain"]
+    full_prompt = skill["prompt"] + "\n\nSpecific task: " + args[:500]
+    await update.message.reply_text(f"Running /{cmd} on {brain} brain...")
+    save_message("user", f"/{cmd} {args}", route="skill")
+    t = asyncio.create_task(run_and_notify(update, brain, full_prompt))
+    t.add_done_callback(_log_task_error)
+
+
 # --- Main message handler ---
 @authorized
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -749,15 +1260,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     route, task = classify(text)
     logger.info("Route: %s | %s", route, task[:80])
 
-    # Store user message in history
+    # Store user message in history + persistent memory
     conversation_history.append(("user", text))
+    save_message("user", text, route=route)
 
-    if route == "local":
-        await update.message.reply_text("...")
+    if route == "search":
+        t = asyncio.create_task(search_and_summarize(task, update))
+        t.add_done_callback(_log_task_error)
+
+    elif route == "local":
+        await update.message.reply_text("🤔")
         full_prompt = build_prompt_with_history(text)
         response = await ask_llm(full_prompt, timeout=90)
-        conversation_history.append(("assistant", response))
-        await update.message.reply_text(truncate(response, 4000))
+
+        # Catch useless "I can't search/access" responses — auto-search instead
+        cant_phrases = [
+            "can't search", "cannot search", "can't access the internet",
+            "don't have access", "can't browse", "cannot browse",
+            "no internet access", "can't look up", "unable to search",
+            "can't access live", "don't have the ability to search",
+        ]
+        if any(phrase in response.lower() for phrase in cant_phrases):
+            logger.info("LLM said it can't search — auto-triggering search for: %s", text[:80])
+            t = asyncio.create_task(search_and_summarize(text, update))
+            t.add_done_callback(_log_task_error)
+        else:
+            conversation_history.append(("assistant", response))
+            save_message("assistant", response, route="local")
+            await update.message.reply_text(truncate(response, 4000))
 
     elif route == "collab":
         t = asyncio.create_task(run_collab_pipeline(update, task, DEFAULT_ROUNDS))
@@ -784,7 +1314,9 @@ async def run_and_notify(update, brain, task):
             review = await review_result(brain, task, stdout.strip())
             if review:
                 await update.message.reply_text(f"Review ({brain}):\n{review}")
-            conversation_history.append(("assistant", f"[{brain} brain]: {result[:200]}"))
+            brain_entry = f"[{brain} brain]: {result[:200]}"
+            conversation_history.append(("assistant", brain_entry))
+            save_message("assistant", brain_entry, route=brain)
             await update.message.reply_text(brain + " brain done:\n" + result)
         else:
             log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
@@ -1158,6 +1690,7 @@ def main():
     app.add_handler(CommandHandler("results", cmd_results))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("start", cmd_help))
+    app.add_handler(CommandHandler("search", cmd_search))
 
     # Brain skill commands
     for skill_name in BRAIN_SKILLS:
@@ -1169,6 +1702,17 @@ def main():
     app.add_handler(CommandHandler("journal", cmd_journal))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("note", cmd_note))
+
+    # Memory, mailbox, skills commands
+    app.add_handler(CommandHandler("remember", cmd_remember))
+    app.add_handler(CommandHandler("mail", cmd_mail))
+    app.add_handler(CommandHandler("newskill", cmd_newskill))
+    app.add_handler(CommandHandler("skills", cmd_skills))
+
+    # Dynamic custom skill commands
+    for skill_name in CUSTOM_SKILLS:
+        if skill_name not in BRAIN_SKILLS:  # don't shadow built-in skills
+            app.add_handler(CommandHandler(skill_name, handle_custom_skill))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
