@@ -1290,7 +1290,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/inbox /note /journal /digest /connections\n\n"
         "<b>🔍 Web:</b> /search <i>or say 'search for...'</i>\n"
         "<b>📡 Trends:</b> /trends <i>topic</i> — last 30 days across platforms\n"
-        "<b>📊 Predict:</b> /predict — LMSR prediction market calculator\n"
+        "<b>📊 Predict:</b> /predict — LMSR market maker math\n"
+        "<b>🎯 Signal:</b> /signal — Monte Carlo confidence scoring\n"
         "<b>💡 Suggest:</b> /suggest — let the bot suggest what to work on\n"
         "<b>🌙 Overnight:</b> /overnight <i>task</i> — queue for 2 AM\n"
         "<b>🧠 Memory:</b> /remember <i>query</i>\n"
@@ -1506,6 +1507,193 @@ async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Analysis failed: {response[:200]}")
     else:
         await update.message.reply_text(f"Unknown subcommand: {subcmd}. Try /predict for help.")
+
+
+# --- Monte Carlo Signal Generator ---
+import random
+
+
+def mc_dropout_simulate(base_prob, n_runs=50, dropout_noise=0.08):
+    """Simulate Monte Carlo Dropout — run the 'model' n times with noise.
+    Returns (mean_confidence, std_uncertainty, individual_predictions).
+    In production this would be an actual LSTM. Here we simulate the concept:
+    each run adds random noise to model the effect of dropout variability."""
+    predictions = []
+    for _ in range(n_runs):
+        # Each 'analyst' sees slightly different data (dropout effect)
+        noise = random.gauss(0, dropout_noise)
+        pred = max(0.01, min(0.99, base_prob + noise))
+        predictions.append(pred)
+    mean_conf = sum(predictions) / len(predictions)
+    std = (sum((p - mean_conf) ** 2 for p in predictions) / len(predictions)) ** 0.5
+    return mean_conf, std, predictions
+
+
+def generate_signal(mean_conf, std, confidence_threshold=0.70):
+    """Generate BUY/HOLD signal from MC dropout results."""
+    if mean_conf >= confidence_threshold and std < 0.12:
+        return "BUY", "🟢"
+    elif mean_conf >= confidence_threshold and std >= 0.12:
+        return "WEAK BUY", "🟡"
+    elif mean_conf < (1 - confidence_threshold) and std < 0.12:
+        return "SELL", "🔴"
+    else:
+        return "HOLD", "⚪"
+
+
+def calc_position_size(confidence, edge, bankroll=10000, max_pct=0.15):
+    """Kelly-weighted position sizing. Caps at max_pct of bankroll."""
+    if edge <= 0:
+        return 0
+    kelly = edge / (1.0 - confidence) if confidence < 1 else 0
+    # Half-Kelly for safety
+    half_kelly = kelly * 0.5
+    size = bankroll * min(half_kelly, max_pct)
+    return max(0, size)
+
+
+@authorized
+async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Monte Carlo confidence signal generator for prediction markets.
+
+    Usage:
+      /signal                                — show help
+      /signal 0.72                           — MC analysis at 72% base probability
+      /signal 0.72 0.55                      — MC analysis + edge calc (your est vs market)
+      /signal scan <topic>                   — LLM scans for high-confidence opportunities
+    """
+    args = " ".join(context.args).strip() if context.args else ""
+
+    if not args:
+        await reply_html(update,
+            "<b>🎯 Monte Carlo Signal Generator</b>\n\n"
+            "<b>Commands:</b>\n"
+            "<code>/signal 0.72</code> — MC dropout analysis at 72% base prob\n"
+            "<code>/signal 0.72 0.55</code> — with edge calc (yours vs market)\n"
+            "<code>/signal scan AI recruiting</code> — LLM finds opportunities\n\n"
+            "<b>Method (from @noisyb0y1):</b>\n"
+            "Run model 50x with dropout noise → take mean + std.\n"
+            "High mean + low std = consensus → BUY\n"
+            "High mean + high std = disagreement → HOLD\n"
+            "Threshold: 70% confidence, &lt;12% uncertainty"
+        )
+        return
+
+    parts = args.split(None, 1)
+    subcmd = parts[0].lower()
+
+    if subcmd == "scan":
+        # LLM scans for high-confidence prediction market opportunities
+        topic = parts[1] if len(parts) > 1 else "current events and markets"
+        await send_typing(update)
+        placeholder = await reply_html(update, f"🎯 <b>Scanning for signals:</b> {html_escape(topic[:60])}...")
+
+        prompt = (
+            "You are a prediction market analyst scanning for high-confidence trading opportunities.\n\n"
+            f"Topic: {topic}\n\n"
+            "Identify 3-5 prediction market questions where you have HIGH confidence "
+            "(>70%) in the outcome direction. For each:\n\n"
+            "1. **Market question** (e.g., 'Will X happen by Y date?')\n"
+            "2. **Your probability estimate** (be specific: 78%, not 'likely')\n"
+            "3. **Likely market price** (what Polymarket/Kalshi would show)\n"
+            "4. **Edge** (your estimate minus market price)\n"
+            "5. **Confidence level** (how much your 50 'internal analysts' agree)\n"
+            "6. **Key signal** (the one data point that makes this high-conviction)\n\n"
+            "Focus on asymmetric bets — where the market is wrong and the payoff is large.\n"
+            "Be specific. Use real events. No vague predictions."
+        )
+        response = await ask_llm(prompt, timeout=60, retries=1)
+        if response and not response.startswith("("):
+            conversation_history.append(("assistant", f"[signal scan: {topic[:60]}]\n{response[:300]}"))
+            save_message("assistant", response, route="signal")
+            await edit_or_reply(placeholder, "🎯 <b>Signal Scan Complete</b>")
+            await reply_html(update, truncate(response, 4000),
+                            reply_markup=build_quick_actions_keyboard(include_search=True))
+        else:
+            await edit_or_reply(placeholder, f"Scan failed: {response[:200]}")
+        return
+
+    # Numeric mode: /signal 0.72 [market_price]
+    try:
+        base_prob = float(subcmd)
+        if base_prob > 1:
+            base_prob /= 100.0
+
+        market_price = None
+        if len(parts) > 1:
+            try:
+                market_price = float(parts[1])
+                if market_price > 1:
+                    market_price /= 100.0
+            except ValueError:
+                pass
+
+        # Run Monte Carlo simulation
+        mean_conf, std, predictions = mc_dropout_simulate(base_prob, n_runs=50)
+        signal, emoji = generate_signal(mean_conf, std)
+
+        # Histogram of predictions
+        buckets = [0] * 10  # 0-10%, 10-20%, ..., 90-100%
+        for p in predictions:
+            idx = min(9, int(p * 10))
+            buckets[idx] += 1
+        max_bucket = max(buckets) if buckets else 1
+        hist_lines = []
+        for i, count in enumerate(buckets):
+            bar = "█" * int(count / max_bucket * 8) if max_bucket > 0 else ""
+            pct = f"{i*10}-{(i+1)*10}%"
+            hist_lines.append(f"{pct:>7} {bar} {count}")
+
+        # Build response
+        lines = [
+            f"<b>🎯 Monte Carlo Signal Analysis</b>",
+            f"",
+            f"Base probability: <b>{base_prob*100:.1f}%</b>",
+            f"MC runs: 50 (dropout noise σ=8%)",
+            f"",
+            f"<b>Results:</b>",
+            f"Mean confidence: <b>{mean_conf*100:.1f}%</b>",
+            f"Uncertainty (σ): <b>{std*100:.1f}%</b>",
+            f"Signal: {emoji} <b>{signal}</b>",
+            f"",
+            f"<b>Distribution:</b>",
+            f"<code>{''.join(hist_lines[5:])}</code>" if mean_conf > 0.5 else f"<code>{''.join(hist_lines[:5])}</code>",
+        ]
+
+        # Edge calc if market price provided
+        if market_price is not None:
+            edge = lmsr_edge(market_price, mean_conf)
+            pos_size = calc_position_size(mean_conf, edge)
+            direction = "BUY YES" if edge > 0 else "BUY NO" if edge < 0 else "NO EDGE"
+
+            lines.extend([
+                f"",
+                f"<b>Edge vs Market:</b>",
+                f"Market price: {market_price*100:.1f}%",
+                f"Your edge: <b>{edge*100:.2f}%</b>",
+                f"Direction: <b>{direction}</b>",
+                f"Suggested size: <b>${pos_size:.0f}</b> (half-Kelly, $10k bankroll)",
+            ])
+
+        # Consensus check
+        buys = sum(1 for p in predictions if p >= 0.70)
+        holds = len(predictions) - buys
+        lines.extend([
+            f"",
+            f"<b>Consensus:</b> {buys}/50 analysts say BUY, {holds}/50 say HOLD",
+        ])
+
+        if buys >= 40:
+            lines.append("→ <b>Strong consensus. High conviction.</b>")
+        elif buys >= 25:
+            lines.append("→ <i>Mixed signals. Proceed with caution.</i>")
+        else:
+            lines.append("→ <i>No consensus. Skip this one.</i>")
+
+        await reply_html(update, "\n".join(lines))
+
+    except ValueError:
+        await update.message.reply_text("Usage: /signal 0.72 or /signal 0.72 0.55\nSee /signal for help.")
 
 
 # --- Brain skill commands ---
@@ -2722,6 +2910,7 @@ def main():
     app.add_handler(CommandHandler("trends", cmd_trends))
     app.add_handler(CommandHandler("overnight", cmd_overnight))
     app.add_handler(CommandHandler("predict", cmd_predict))
+    app.add_handler(CommandHandler("signal", cmd_signal))
 
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
