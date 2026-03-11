@@ -1718,10 +1718,20 @@ LEFT_KEYWORDS = [
     "debug", "test", "fix bug", "analyze code", "security audit",
     "benchmark", "profile", "lint", "code review", "refactor",
     "optimize", "unit test", "integration test",
+    # Research/investigation tasks that need brain power
+    "research", "investigate", "find out", "compile a list", "analyze the",
+    "scan for", "audit", "deep dive", "track down", "identify",
+    "compare", "evaluate", "assess", "map out",
+    # Trading/financial research
+    "wallet", "copytrade", "copy trade", "polymarket", "trading bot",
+    "on-chain", "blockchain", "crypto", "defi", "dex",
 ]
 RIGHT_KEYWORDS = [
     "design", "brainstorm", "write doc", "create logo", "ux",
     "mockup", "ideate", "diagram", "wireframe",
+    # Creative/outreach tasks
+    "network with", "join", "community", "outreach", "engagement",
+    "draft a", "write a thread", "create content", "pitch",
 ]
 
 
@@ -2686,11 +2696,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 t = asyncio.create_task(search_and_summarize(text, update))
                 t.add_done_callback(_log_task_error)
         else:
-            conversation_history.append(("assistant", response))
-            save_message("assistant", response, route="local")
-            # Edit placeholder with the actual response
-            truncated = truncate(response, 4000)
-            await edit_or_reply(placeholder, truncated)
+            # Catch refusal responses — auto-reroute to left brain for research
+            refusal_phrases = [
+                "i can't help with", "i cannot help with", "i'm not able to",
+                "i won't be able to", "i cannot assist with", "not something i can",
+                "i'm unable to", "cannot provide", "i can't do that",
+                "i must decline", "i'm not comfortable", "against my guidelines",
+                "i shouldn't", "i'm sorry, but i can't", "i apologize, but",
+            ]
+            lower_resp = response.lower()
+            if any(phrase in lower_resp for phrase in refusal_phrases) and len(text) > 30:
+                logger.info("LLM refused task — auto-rerouting to left brain: %s", text[:80])
+                await edit_or_reply(placeholder,
+                    "🔄 <b>Rerouting to brain dispatch</b> (LLM declined — using full agent instead)...")
+                t = asyncio.create_task(run_and_notify(update, "left", text))
+                t.add_done_callback(_log_task_error)
+            else:
+                conversation_history.append(("assistant", response))
+                save_message("assistant", response, route="local")
+                # Edit placeholder with the actual response
+                truncated = truncate(response, 4000)
+                await edit_or_reply(placeholder, truncated)
 
     elif route == "collab":
         await send_typing(update)
