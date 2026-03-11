@@ -578,6 +578,121 @@ async def review_result(brain, task, result_text):
     return None
 
 
+# --- Mission Control Sync ---
+MC_DB_PATH = Path.home() / ".device-link" / "mission-control" / ".data" / "mission-control.db"
+
+BRAIN_AGENT_MAP = {
+    "left": {"name": "Left Brain", "role": "developer"},
+    "right": {"name": "Right Brain", "role": "designer"},
+    "collab": {"name": "Left Brain", "role": "developer"},  # collab uses left as primary
+    "main": {"name": "Main (Orchestrator)", "role": "orchestrator"},
+}
+
+
+def mc_ensure_agents():
+    """Ensure the 3 swarm agents exist in Mission Control DB."""
+    if not MC_DB_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+        agents = [
+            (1, "Main (Orchestrator)", "orchestrator", "busy", now, "Running Telegram bot", 1),
+            (2, "Left Brain", "developer", "idle", now, "Awaiting tasks", 1),
+            (3, "Right Brain", "designer", "idle", now, "Awaiting tasks", 1),
+        ]
+        for a in agents:
+            conn.execute(
+                "INSERT OR IGNORE INTO agents (id, name, role, status, last_seen, last_activity, workspace_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", a
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("MC ensure_agents failed: %s", e)
+
+
+def mc_update_agent(brain, status, activity=""):
+    """Update an agent's status in Mission Control."""
+    if not MC_DB_PATH.exists():
+        return
+    try:
+        info = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+        conn.execute(
+            "UPDATE agents SET status = ?, last_seen = ?, last_activity = ?, updated_at = ? "
+            "WHERE name = ? AND workspace_id = 1",
+            (status, now, activity[:200], now, info["name"])
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("MC update_agent failed: %s", e)
+
+
+def mc_create_task(brain, task_title, task_description="", priority="medium"):
+    """Create a task in Mission Control. Returns task_id or None."""
+    if not MC_DB_PATH.exists():
+        return None
+    try:
+        info = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+
+        # Get next ticket number
+        row = conn.execute("SELECT ticket_counter FROM projects WHERE id = 1 AND workspace_id = 1").fetchone()
+        ticket_no = (row[0] + 1) if row else 1
+        conn.execute("UPDATE projects SET ticket_counter = ?, updated_at = ? WHERE id = 1 AND workspace_id = 1",
+                      (ticket_no, now))
+
+        conn.execute(
+            "INSERT INTO tasks (title, description, status, priority, project_id, project_ticket_no, "
+            "assigned_to, created_by, created_at, updated_at, tags, metadata, workspace_id) "
+            "VALUES (?, ?, 'in_progress', ?, 1, ?, ?, 'josh', ?, ?, ?, '{}', 1)",
+            (
+                task_title[:200],
+                task_description[:2000],
+                priority,
+                ticket_no,
+                info["name"],
+                now, now,
+                json.dumps([brain, "telegram-dispatch"]),
+            )
+        )
+        task_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+        logger.info("MC task created: #%d [%s] %s", task_id, brain, task_title[:60])
+        return task_id
+    except Exception as e:
+        logger.error("MC create_task failed: %s", e)
+        return None
+
+
+def mc_update_task(task_id, status, outcome="", result_preview=""):
+    """Update a task status in Mission Control."""
+    if not MC_DB_PATH.exists() or not task_id:
+        return
+    try:
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+        completed_at = now if status == "done" else None
+        conn.execute(
+            "UPDATE tasks SET status = ?, outcome = ?, updated_at = ?, completed_at = COALESCE(?, completed_at) "
+            "WHERE id = ? AND workspace_id = 1",
+            (status, (outcome or result_preview)[:2000], now, completed_at, task_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("MC update_task failed: %s", e)
+
+
+# Initialize MC agents on startup
+mc_ensure_agents()
+
+
 # --- Task dispatch ---
 async def dispatch_task(brain, task):
     proc = await asyncio.create_subprocess_exec(
@@ -2141,12 +2256,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def run_and_notify(update, brain, task):
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
+    # --- MC sync: mark agent busy + create task ---
+    mc_update_agent(brain, "busy", task[:100])
+    mc_task_id = mc_create_task(brain, task[:200], priority="medium")
     try:
         code, stdout, stderr = await dispatch_task(brain, task)
         if code == 0:
             result = truncate(stdout.strip(), 3000) if stdout.strip() else "(no output)"
             # Log to second-brain ledger
             log_to_ledger(brain, task[:200], "pipeline", "completed", stdout.strip()[:300])
+            # --- MC sync: task done, agent idle ---
+            mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
+            mc_update_agent(brain, "idle", f"Completed: {task[:80]}")
             # Review gate — send executive summary before full result
             review = await review_result(brain, task, stdout.strip())
             if review:
@@ -2161,19 +2282,30 @@ async def run_and_notify(update, brain, task):
             )
         else:
             log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
+            # --- MC sync: task failed, agent idle ---
+            mc_update_task(mc_task_id, "failed", outcome=stderr.strip()[:300])
+            mc_update_agent(brain, "idle", f"Failed: {task[:80]}")
             err = truncate(stderr.strip() or stdout.strip(), 2000)
             await reply_html(update, f"❌ <b>{brain} failed</b> (exit {code}):\n<pre>{html_escape(err)}</pre>")
     except asyncio.TimeoutError:
         log_to_ledger(brain, task[:200], "pipeline", "timeout")
+        mc_update_task(mc_task_id, "failed", outcome="timeout")
+        mc_update_agent(brain, "idle", f"Timed out: {task[:80]}")
         await reply_html(update, f"⏰ <b>{brain} timed out:</b> {html_escape(task[:100])}")
     except Exception as e:
         log_to_ledger(brain, task[:200], "pipeline", "error", str(e))
+        mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
+        mc_update_agent(brain, "idle", f"Error: {task[:80]}")
         await reply_html(update, f"❌ <b>{brain} error:</b> {html_escape(str(e))}")
 
 
 async def run_collab_pipeline(update, task, rounds=2):
     """Run collaborative pipeline with live progress streaming via @@COLLAB markers."""
     COLLAB_WALL_TIMEOUT = 900  # 15 min total wall-clock limit
+    # --- MC sync: both brains busy + create collab task ---
+    mc_update_agent("left", "busy", f"Collab: {task[:80]}")
+    mc_update_agent("right", "busy", f"Collab: {task[:80]}")
+    mc_task_id = mc_create_task("collab", task[:200], task_description="Collaborative pipeline", priority="high")
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", TRIGGER_SCRIPT, "collab", "--rounds", str(rounds), task,
@@ -2243,26 +2375,42 @@ async def run_collab_pipeline(update, task, rounds=2):
 
             if deliverable:
                 log_to_ledger("collab", task[:200], "collab", "completed", deliverable[:300])
+                # --- MC sync: collab done, both brains idle ---
+                mc_update_task(mc_task_id, "done", result_preview=deliverable[:500])
+                mc_update_agent("left", "idle", f"Collab done: {task[:80]}")
+                mc_update_agent("right", "idle", f"Collab done: {task[:80]}")
                 await update.message.reply_text("Final Result:")
                 chunks = [deliverable[i:i+3500] for i in range(0, len(deliverable), 3500)]
                 for chunk in chunks:
                     await update.message.reply_text(chunk)
                 conversation_history.append(("assistant", f"[collab result]: {deliverable[:300]}"))
             else:
+                mc_update_task(mc_task_id, "done", outcome="empty result")
+                mc_update_agent("left", "idle", "Collab: empty result")
+                mc_update_agent("right", "idle", "Collab: empty result")
                 await update.message.reply_text("Collaboration complete but result was empty.")
         elif final_output_lines:
             # Fallback: send raw output
             output = "\n".join(final_output_lines)
             if output.strip():
+                mc_update_task(mc_task_id, "done", result_preview=output[:500])
+                mc_update_agent("left", "idle", f"Collab done: {task[:80]}")
+                mc_update_agent("right", "idle", f"Collab done: {task[:80]}")
                 chunks = [output[i:i+3500] for i in range(0, len(output), 3500)]
                 await update.message.reply_text("Collaboration result:")
                 for chunk in chunks:
                     await update.message.reply_text(chunk)
                 conversation_history.append(("assistant", f"[collab result]: {output[:300]}"))
             else:
+                mc_update_task(mc_task_id, "done", outcome="no output")
+                mc_update_agent("left", "idle", "Collab: no output")
+                mc_update_agent("right", "idle", "Collab: no output")
                 await update.message.reply_text("Collaboration completed but no output captured.")
         else:
             stderr_out = (await asyncio.wait_for(proc.stderr.read(), timeout=10)).decode().strip()
+            mc_update_task(mc_task_id, "failed", outcome=stderr_out[:300] if stderr_out else "no output")
+            mc_update_agent("left", "idle", f"Collab failed: {task[:80]}")
+            mc_update_agent("right", "idle", f"Collab failed: {task[:80]}")
             if stderr_out:
                 await update.message.reply_text("Collaboration error:\n" + truncate(stderr_out, 2000))
             else:
@@ -2275,6 +2423,10 @@ async def run_collab_pipeline(update, task, rounds=2):
             await proc.wait()
         except Exception:
             pass
+        # --- MC sync: timeout ---
+        mc_update_task(mc_task_id, "failed", outcome="timeout")
+        mc_update_agent("left", "idle", f"Collab timed out: {task[:80]}")
+        mc_update_agent("right", "idle", f"Collab timed out: {task[:80]}")
         await update.message.reply_text("Collaboration timed out on: " + task[:100])
         # Check for partial results
         try:
@@ -2290,6 +2442,9 @@ async def run_collab_pipeline(update, task, rounds=2):
         except:
             pass
     except Exception as e:
+        mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
+        mc_update_agent("left", "idle", f"Collab error: {task[:80]}")
+        mc_update_agent("right", "idle", f"Collab error: {task[:80]}")
         await update.message.reply_text("Collaboration error: " + str(e))
 
 
@@ -2359,12 +2514,22 @@ async def run_project(update, description):
 
     results = []
 
+    # --- MC sync: mark brains busy for project ---
+    if left_tasks:
+        mc_update_agent("left", "busy", f"Project: {summary[:80]}")
+    if right_tasks:
+        mc_update_agent("right", "busy", f"Project: {summary[:80]}")
+
     async def run_one(brain, task_text):
+        # --- MC sync: create task for each sub-task ---
+        mc_tid = mc_create_task(brain, task_text[:200], task_description=f"Project: {summary[:200]}", priority="medium")
         try:
             code, stdout, stderr = await dispatch_task(brain, task_text)
             status = "done" if code == 0 else "failed"
             output = stdout.strip()[:500] if code == 0 else (stderr.strip() or stdout.strip())[:500]
             results.append((brain, task_text, status, output))
+            # --- MC sync: update task result ---
+            mc_update_task(mc_tid, status, result_preview=output[:500])
             # Review gate
             if code == 0:
                 review = await review_result(brain, task_text, stdout.strip())
@@ -2375,14 +2540,20 @@ async def run_project(update, description):
             )
         except Exception as e:
             results.append((brain, task_text, "error", str(e)))
+            mc_update_task(mc_tid, "failed", outcome=str(e)[:300])
             await update.message.reply_text(f"{brain} error: {task_text[:60]}\n{e}")
 
     await asyncio.gather(*(run_one(b, t) for b, t in
                            [(b, t) for b in ["left"] for t in left_tasks] +
                            [(b, t) for b in ["right"] for t in right_tasks]))
 
+    # --- MC sync: all project tasks done, brains idle ---
     done = sum(1 for _, _, s, _ in results if s == "done")
     total = len(results)
+    if left_tasks:
+        mc_update_agent("left", "idle", f"Project done: {done}/{total} tasks")
+    if right_tasks:
+        mc_update_agent("right", "idle", f"Project done: {done}/{total} tasks")
     conversation_history.append(("assistant", f"[project]: {summary} — {done}/{total} tasks done"))
     await update.message.reply_text(
         f"Project complete: {done}/{total} tasks succeeded.\n"
@@ -2438,11 +2609,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def run_and_notify_from_msg(message, brain, task):
     """Like run_and_notify but works with a raw message object (for callbacks)."""
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
+    # --- MC sync: mark agent busy + create task ---
+    mc_update_agent(brain, "busy", task[:100])
+    mc_task_id = mc_create_task(brain, task[:200], priority="medium")
     try:
         code, stdout, stderr = await dispatch_task(brain, task)
         if code == 0:
             result = truncate(stdout.strip(), 3000) if stdout.strip() else "(no output)"
             log_to_ledger(brain, task[:200], "pipeline", "completed", stdout.strip()[:300])
+            # --- MC sync: task done, agent idle ---
+            mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
+            mc_update_agent(brain, "idle", f"Completed: {task[:80]}")
             review = await review_result(brain, task, stdout.strip())
             if review:
                 await message.reply_text(f"📝 Review ({brain}):\n{review}")
@@ -2452,13 +2629,20 @@ async def run_and_notify_from_msg(message, brain, task):
             await message.reply_text(f"{emoji} {brain.capitalize()} brain done:\n\n{result}")
         else:
             log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
+            # --- MC sync: task failed, agent idle ---
+            mc_update_task(mc_task_id, "failed", outcome=stderr.strip()[:300])
+            mc_update_agent(brain, "idle", f"Failed: {task[:80]}")
             err = truncate(stderr.strip() or stdout.strip(), 2000)
             await message.reply_text(f"❌ {brain} failed (exit {code}):\n{err}")
     except asyncio.TimeoutError:
         log_to_ledger(brain, task[:200], "pipeline", "timeout")
+        mc_update_task(mc_task_id, "failed", outcome="timeout")
+        mc_update_agent(brain, "idle", f"Timed out: {task[:80]}")
         await message.reply_text(f"⏰ {brain} timed out: {task[:100]}")
     except Exception as e:
         log_to_ledger(brain, task[:200], "pipeline", "error", str(e))
+        mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
+        mc_update_agent(brain, "idle", f"Error: {task[:80]}")
         await message.reply_text(f"❌ {brain} error: {e}")
 
 
@@ -2714,17 +2898,35 @@ async def run_overnight_tasks(context: ContextTypes.DEFAULT_TYPE):
         brain = task_info.get("brain", "collab")
         if not task_text:
             continue
+        # --- MC sync: create task + set agent busy ---
+        mc_tid = mc_create_task(brain, task_text[:200], task_description="Overnight queue", priority="low")
         try:
             if brain == "collab":
+                mc_update_agent("left", "busy", f"Overnight: {task_text[:80]}")
+                mc_update_agent("right", "busy", f"Overnight: {task_text[:80]}")
                 code, stdout, stderr = await dispatch_task("left", task_text)
                 if code == 0:
                     code2, stdout2, stderr2 = await dispatch_task("right", task_text)
+                mc_update_agent("left", "idle", f"Overnight done: {task_text[:60]}")
+                mc_update_agent("right", "idle", f"Overnight done: {task_text[:60]}")
             else:
+                mc_update_agent(brain, "busy", f"Overnight: {task_text[:80]}")
                 code, stdout, stderr = await dispatch_task(brain, task_text)
-            log_to_ledger(brain, task_text[:200], "overnight", "completed" if code == 0 else "failed")
+                mc_update_agent(brain, "idle", f"Overnight done: {task_text[:60]}")
+            status = "completed" if code == 0 else "failed"
+            log_to_ledger(brain, task_text[:200], "overnight", status)
+            mc_update_task(mc_tid, "done" if code == 0 else "failed",
+                           result_preview=(stdout.strip()[:500] if code == 0 else stderr.strip()[:300]))
         except Exception as e:
             logger.error("Overnight task failed: %s — %s", task_text[:60], e)
             log_to_ledger(brain, task_text[:200], "overnight", "error", str(e))
+            mc_update_task(mc_tid, "failed", outcome=str(e)[:300])
+            # Reset agents to idle on error
+            if brain == "collab":
+                mc_update_agent("left", "idle", f"Overnight error: {task_text[:60]}")
+                mc_update_agent("right", "idle", f"Overnight error: {task_text[:60]}")
+            else:
+                mc_update_agent(brain, "idle", f"Overnight error: {task_text[:60]}")
 
     # Clear the queue
     OVERNIGHT_FILE.write_text("[]")
