@@ -1409,6 +1409,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>🎯 Signal:</b> /signal — Monte Carlo confidence scoring\n"
         "<b>💡 Suggest:</b> /suggest — let the bot suggest what to work on\n"
         "<b>🌙 Overnight:</b> /overnight <i>task</i> — queue for 2 AM\n"
+        "<b>🔄 Ambient:</b> /ambient — always-on productive work\n"
         "<b>🧠 Memory:</b> /remember <i>query</i>\n"
         "<b>📬 Mailbox:</b> /mail • /mail left <i>msg</i>\n"
         "<b>⚡ Skills:</b> /skills • /newskill",
@@ -2255,6 +2256,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def run_and_notify(update, brain, task):
+    global _direct_tasks_active
+    _direct_tasks_active += 1
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
     # --- MC sync: mark agent busy + create task ---
     mc_update_agent(brain, "busy", task[:100])
@@ -2297,10 +2300,14 @@ async def run_and_notify(update, brain, task):
         mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
         mc_update_agent(brain, "idle", f"Error: {task[:80]}")
         await reply_html(update, f"❌ <b>{brain} error:</b> {html_escape(str(e))}")
+    finally:
+        _direct_tasks_active = max(0, _direct_tasks_active - 1)
 
 
 async def run_collab_pipeline(update, task, rounds=2):
     """Run collaborative pipeline with live progress streaming via @@COLLAB markers."""
+    global _direct_tasks_active
+    _direct_tasks_active += 1
     COLLAB_WALL_TIMEOUT = 900  # 15 min total wall-clock limit
     # --- MC sync: both brains busy + create collab task ---
     mc_update_agent("left", "busy", f"Collab: {task[:80]}")
@@ -2446,6 +2453,8 @@ async def run_collab_pipeline(update, task, rounds=2):
         mc_update_agent("left", "idle", f"Collab error: {task[:80]}")
         mc_update_agent("right", "idle", f"Collab error: {task[:80]}")
         await update.message.reply_text("Collaboration error: " + str(e))
+    finally:
+        _direct_tasks_active = max(0, _direct_tasks_active - 1)
 
 
 # --- Project mode (auto-split across brains) ---
@@ -2489,11 +2498,14 @@ async def plan_project(description):
 
 async def run_project(update, description):
     """Orchestrate a full project across both brains with review gate."""
+    global _direct_tasks_active
+    _direct_tasks_active += 1
     await update.message.reply_text(f"Planning project: {description[:100]}...\nBreaking into tasks...")
     try:
         plan = await plan_project(description)
     except Exception as e:
         await update.message.reply_text(f"Planning failed: {e}")
+        _direct_tasks_active = max(0, _direct_tasks_active - 1)
         return
 
     left_tasks = plan.get("left", [])
@@ -2559,6 +2571,7 @@ async def run_project(update, description):
         f"Project complete: {done}/{total} tasks succeeded.\n"
         f"Use /results to see full output."
     )
+    _direct_tasks_active = max(0, _direct_tasks_active - 1)
 
 
 # --- Inline Keyboard Callback Handler ---
@@ -2608,6 +2621,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def run_and_notify_from_msg(message, brain, task):
     """Like run_and_notify but works with a raw message object (for callbacks)."""
+    global _direct_tasks_active
+    _direct_tasks_active += 1
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
     # --- MC sync: mark agent busy + create task ---
     mc_update_agent(brain, "busy", task[:100])
@@ -2644,6 +2659,8 @@ async def run_and_notify_from_msg(message, brain, task):
         mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
         mc_update_agent(brain, "idle", f"Error: {task[:80]}")
         await message.reply_text(f"❌ {brain} error: {e}")
+    finally:
+        _direct_tasks_active = max(0, _direct_tasks_active - 1)
 
 
 # --- Global Error Handler ---
@@ -2965,6 +2982,391 @@ async def memory_flush(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Memory flush failed: %s", e)
 
 
+# --- Ambient Work System — Agents never idle ---
+AMBIENT_FILE = Path.home() / ".device-link" / "ambient-state.json"
+AMBIENT_RESULTS_DIR = Path.home() / ".device-link" / "results" / "ambient"
+AMBIENT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Lock to prevent overlapping ambient dispatches
+_ambient_running = False
+# Track when user-requested tasks are active (ambient yields to direct work)
+_direct_tasks_active = 0
+
+# Task categories — rotated through so brains always have productive work
+AMBIENT_TASKS = {
+    "income": [
+        {
+            "brain": "left",
+            "task": "Research current high-demand freelance skills on Upwork, Toptal, and Fiverr for 2026. "
+                    "Identify 3 specific micro-SaaS or AI-agent niches that a solo developer with Claude/AI expertise "
+                    "could build and monetize within 2 weeks. For each, estimate monthly revenue potential, "
+                    "competition level, and a one-paragraph build plan. Output as actionable markdown.",
+            "label": "Freelance opportunity scan",
+        },
+        {
+            "brain": "right",
+            "task": "Generate 3 creative AI-powered product ideas that could be launched as paid tools or services "
+                    "within 1-2 weeks using existing Device Link infrastructure (3 Macs, Claude, Telegram bot). "
+                    "For each idea: name it, describe the value prop, target audience, pricing model, and a quick "
+                    "marketing hook. Think outside the box — what would people pay $20-50/mo for?",
+            "label": "Product ideation",
+        },
+        {
+            "brain": "left",
+            "task": "Analyze the current AI agent marketplace (AgentHub, CrewAI marketplace, OpenAI GPT store, "
+                    "Claude artifacts). Identify gaps where a multi-agent swarm like Device Link has a competitive "
+                    "edge. Suggest 2 concrete agent-as-a-service offerings with pricing, technical requirements, "
+                    "and a go-to-market strategy. Be specific and actionable.",
+            "label": "Agent marketplace analysis",
+        },
+        {
+            "brain": "right",
+            "task": "Draft a compelling landing page copy (headline, subheadline, 3 benefit bullets, CTA) for "
+                    "an AI automation service targeting small business owners. The service uses a multi-agent AI swarm "
+                    "to handle research, content creation, and technical tasks 24/7. Make it punchy, modern, and "
+                    "conversion-focused. Include pricing tier suggestions.",
+            "label": "Landing page copy draft",
+        },
+        {
+            "brain": "left",
+            "task": "Research trending GitHub repos, ProductHunt launches, and HackerNews front-page projects from "
+                    "the past 7 days in the AI/automation space. Identify patterns and underserved niches. "
+                    "Suggest 2 open-source tools or libraries that could be built to gain traction and later "
+                    "monetized via premium features. Include repo naming, README outline, and launch strategy.",
+            "label": "Open source opportunity scan",
+        },
+    ],
+    "project": [
+        {
+            "brain": "left",
+            "task": "Review the AI Screening Assistant project for Naples/Xwell Spa. Analyze the current technical "
+                    "implementation plan and identify: 1) The single highest-risk technical component, 2) A concrete "
+                    "next step that could be built today, 3) Any missing security or compliance considerations for "
+                    "handling candidate data (CCPA, etc). Output actionable recommendations.",
+            "label": "AI Screening Assistant review",
+        },
+        {
+            "brain": "right",
+            "task": "For the AI Screening Assistant project: design the candidate experience flow from receiving "
+                    "the screening call to getting hired. Map out the emotional journey, identify friction points, "
+                    "and suggest 3 UX improvements that would make candidates feel valued (not interrogated by AI). "
+                    "Include sample conversation scripts for the voice AI.",
+            "label": "Screening UX design",
+        },
+        {
+            "brain": "left",
+            "task": "Audit the Device Link codebase itself. Review telegram-bridge.py for: 1) Error handling gaps "
+                    "that could cause silent failures, 2) Performance bottlenecks in the message handling pipeline, "
+                    "3) Security concerns (token exposure, injection risks). Suggest the top 3 improvements with "
+                    "specific code-level recommendations.",
+            "label": "Device Link self-audit",
+        },
+    ],
+    "growth": [
+        {
+            "brain": "right",
+            "task": "Write a Twitter/X thread (8-10 tweets) about building a personal AI agent swarm with 3 Mac laptops. "
+                    "Cover: the setup, what it does, surprising capabilities, and lessons learned. Make it authentic, "
+                    "technically interesting but accessible. Include hook tweet and a CTA. Style: builder sharing "
+                    "their work, not salesy.",
+            "label": "Twitter thread draft",
+        },
+        {
+            "brain": "left",
+            "task": "Research SEO keywords and content opportunities around 'AI agent swarm', 'multi-agent system', "
+                    "'personal AI assistant setup', and 'Claude Code automation'. Identify 5 long-tail keywords with "
+                    "search volume, suggest blog post titles for each, and outline the highest-opportunity post in "
+                    "detail (H2 structure, word count target, key points to cover).",
+            "label": "SEO content research",
+        },
+        {
+            "brain": "right",
+            "task": "Design a short-form video script (60-90 seconds) showing the Device Link AI swarm in action. "
+                    "The hook should grab attention in 3 seconds. Show: sending a task via Telegram, both brains "
+                    "working simultaneously, results coming back. End with a memorable takeaway. Write the full "
+                    "script with visual directions and voiceover text.",
+            "label": "Video script draft",
+        },
+    ],
+    "research": [
+        {
+            "brain": "left",
+            "task": "Research the latest developments in AI agent frameworks (CrewAI, AutoGen, LangGraph, Claude Agent SDK, "
+                    "OpenAI Swarm) from the past 30 days. Compare their multi-agent orchestration approaches with "
+                    "Device Link's bash-based trigger system. Identify 2-3 features or patterns worth adopting. "
+                    "Be specific about implementation difficulty and expected benefits.",
+            "label": "AI framework landscape scan",
+        },
+        {
+            "brain": "right",
+            "task": "Explore unconventional uses of a 3-machine AI swarm that most people wouldn't think of. "
+                    "Consider: automated negotiation, real-time market making simulation, creative writing partnerships, "
+                    "music composition, game AI testing, scientific hypothesis generation. Pick the 3 most promising "
+                    "and write a one-page concept for each.",
+            "label": "Creative swarm applications",
+        },
+        {
+            "brain": "left",
+            "task": "Analyze the economics of running AI agents 24/7. Compare: Claude API costs vs local Ollama models "
+                    "vs hybrid approaches. Calculate break-even points for different workloads. Suggest an optimal "
+                    "cost-reduction strategy for Device Link that maintains quality for complex tasks while using "
+                    "local models for routine work. Include specific model recommendations.",
+            "label": "Cost optimization analysis",
+        },
+    ],
+}
+
+# Flatten all tasks with category tags
+_ALL_AMBIENT = []
+for category, tasks in AMBIENT_TASKS.items():
+    for t in tasks:
+        _ALL_AMBIENT.append({**t, "category": category})
+
+
+def _load_ambient_state():
+    """Load ambient state (last run index, history, enabled flag)."""
+    if AMBIENT_FILE.exists():
+        try:
+            return json.loads(AMBIENT_FILE.read_text())
+        except Exception:
+            pass
+    return {"enabled": True, "index": 0, "history": [], "paused_until": None}
+
+
+def _save_ambient_state(state):
+    """Persist ambient state."""
+    AMBIENT_FILE.write_text(json.dumps(state, indent=2, default=str))
+
+
+async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic job: if brains are idle, dispatch productive ambient work."""
+    global _ambient_running
+    if _ambient_running:
+        logger.info("Ambient: skipping — previous task still running")
+        return
+
+    if _direct_tasks_active > 0:
+        logger.info("Ambient: skipping — %d direct task(s) active", _direct_tasks_active)
+        return
+
+    state = _load_ambient_state()
+    if not state.get("enabled", True):
+        return
+
+    # Check if paused (e.g. user said "stop ambient for 2 hours")
+    paused_until = state.get("paused_until")
+    if paused_until:
+        try:
+            if datetime.fromisoformat(paused_until) > datetime.now():
+                return
+            else:
+                state["paused_until"] = None
+                _save_ambient_state(state)
+        except Exception:
+            state["paused_until"] = None
+            _save_ambient_state(state)
+
+    # Pick next task (round-robin through all categories)
+    if not _ALL_AMBIENT:
+        return
+    idx = state.get("index", 0) % len(_ALL_AMBIENT)
+    task_info = _ALL_AMBIENT[idx]
+
+    brain = task_info["brain"]
+    task_text = task_info["task"]
+    label = task_info["label"]
+    category = task_info["category"]
+
+    _ambient_running = True
+    logger.info("Ambient: dispatching [%s/%s] %s to %s brain", category, label, task_text[:60], brain)
+
+    # --- MC sync ---
+    mc_update_agent(brain, "busy", f"Ambient: {label[:80]}")
+    mc_task_id = mc_create_task(brain, f"[Ambient] {label}"[:200],
+                                 task_description=task_text[:500], priority="low")
+
+    try:
+        code, stdout, stderr = await dispatch_task(brain, task_text)
+        now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        if code == 0 and stdout.strip():
+            # Save result
+            result_file = AMBIENT_RESULTS_DIR / f"{category}-{brain}-{now_str}.md"
+            result_file.write_text(
+                f"---\n"
+                f"category: {category}\n"
+                f"label: {label}\n"
+                f"brain: {brain}\n"
+                f"timestamp: {datetime.now().isoformat()}\n"
+                f"---\n\n"
+                f"# {label}\n\n"
+                f"{stdout.strip()}\n"
+            )
+            log_to_ledger(brain, f"[ambient] {label}"[:200], "ambient", "completed", stdout.strip()[:300])
+            mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
+            mc_update_agent(brain, "idle", f"Ambient done: {label[:60]}")
+
+            # Notify user with a brief summary (don't spam — keep it short)
+            preview = stdout.strip()[:300]
+            await context.bot.send_message(
+                chat_id=AUTHORIZED_CHAT_ID,
+                text=f"🔄 <b>Ambient [{category}]:</b> {label}\n\n{preview[:200]}...\n\n"
+                     f"<i>Full result saved. Use /ambient results to see all.</i>",
+                parse_mode="HTML",
+            )
+        else:
+            err = stderr.strip()[:200] if stderr else "(no output)"
+            logger.warning("Ambient task failed: %s — %s", label, err)
+            mc_update_task(mc_task_id, "failed", outcome=err)
+            mc_update_agent(brain, "idle", f"Ambient failed: {label[:60]}")
+
+    except asyncio.TimeoutError:
+        logger.warning("Ambient task timed out: %s", label)
+        mc_update_task(mc_task_id, "failed", outcome="timeout")
+        mc_update_agent(brain, "idle", f"Ambient timeout: {label[:60]}")
+    except Exception as e:
+        logger.error("Ambient error: %s — %s", label, e)
+        mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
+        mc_update_agent(brain, "idle", f"Ambient error: {label[:60]}")
+    finally:
+        _ambient_running = False
+        # Advance index
+        state = _load_ambient_state()
+        state["index"] = (idx + 1) % len(_ALL_AMBIENT)
+        state["history"].append({
+            "label": label,
+            "category": category,
+            "brain": brain,
+            "timestamp": datetime.now().isoformat(),
+        })
+        # Keep only last 50 history entries
+        state["history"] = state["history"][-50:]
+        _save_ambient_state(state)
+
+
+# --- /ambient command ---
+@authorized
+async def cmd_ambient(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Control the ambient work system. Usage: /ambient [on|off|status|results|pause <hours>]"""
+    args = " ".join(context.args).strip().lower() if context.args else "status"
+    state = _load_ambient_state()
+
+    if args == "on":
+        state["enabled"] = True
+        state["paused_until"] = None
+        _save_ambient_state(state)
+        await reply_html(update,
+            "🔄 <b>Ambient work: ENABLED</b>\n"
+            "Brains will automatically work on productive tasks when idle."
+        )
+
+    elif args == "off":
+        state["enabled"] = False
+        _save_ambient_state(state)
+        await reply_html(update,
+            "⏸ <b>Ambient work: DISABLED</b>\n"
+            "Brains will idle when not given direct tasks."
+        )
+
+    elif args.startswith("pause"):
+        hours = 2  # default
+        parts = args.split()
+        if len(parts) > 1:
+            try:
+                hours = float(parts[1])
+            except ValueError:
+                pass
+        from datetime import timedelta
+        resume_at = datetime.now() + timedelta(hours=hours)
+        state["paused_until"] = resume_at.isoformat()
+        _save_ambient_state(state)
+        await reply_html(update,
+            f"⏸ <b>Ambient paused for {hours:.1f}h</b>\n"
+            f"Resumes at {resume_at.strftime('%H:%M')}"
+        )
+
+    elif args == "results":
+        # Show recent ambient results
+        result_files = sorted(AMBIENT_RESULTS_DIR.glob("*.md"), key=os.path.getmtime, reverse=True)[:10]
+        if not result_files:
+            await reply_html(update, "No ambient results yet. Brains are just getting started!")
+            return
+        lines = ["<b>🔄 Recent Ambient Work:</b>\n"]
+        for f in result_files:
+            name = f.stem
+            mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%m/%d %H:%M")
+            # Parse label from frontmatter
+            try:
+                content = f.read_text()
+                label_line = [l for l in content.split("\n") if l.startswith("label:")]
+                label = label_line[0].split(":", 1)[1].strip() if label_line else name
+            except Exception:
+                label = name
+            lines.append(f"• <b>{mtime}</b> — {label}")
+        lines.append(f"\n<i>{len(result_files)} results shown. Files in ~/results/ambient/</i>")
+        await reply_html(update, "\n".join(lines))
+
+    elif args.startswith("show"):
+        # Show the last ambient result in full
+        result_files = sorted(AMBIENT_RESULTS_DIR.glob("*.md"), key=os.path.getmtime, reverse=True)
+        if not result_files:
+            await reply_html(update, "No ambient results yet.")
+            return
+        content = result_files[0].read_text()
+        # Strip frontmatter
+        if content.startswith("---"):
+            end = content.find("---", 3)
+            if end > 0:
+                content = content[end + 3:].strip()
+        chunks = [content[i:i+3500] for i in range(0, min(len(content), 7000), 3500)]
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
+
+    elif args == "next":
+        # Show what's coming next
+        idx = state.get("index", 0) % len(_ALL_AMBIENT)
+        upcoming = []
+        for i in range(5):
+            t = _ALL_AMBIENT[(idx + i) % len(_ALL_AMBIENT)]
+            upcoming.append(f"{i+1}. [{t['category']}] {t['label']} → {t['brain']}")
+        await reply_html(update,
+            "<b>🔄 Next 5 Ambient Tasks:</b>\n\n" + "\n".join(upcoming)
+        )
+
+    else:  # status
+        enabled = "✅ ON" if state.get("enabled", True) else "❌ OFF"
+        paused = ""
+        if state.get("paused_until"):
+            try:
+                p = datetime.fromisoformat(state["paused_until"])
+                if p > datetime.now():
+                    paused = f"\n⏸ Paused until {p.strftime('%H:%M')}"
+            except Exception:
+                pass
+        idx = state.get("index", 0) % len(_ALL_AMBIENT) if _ALL_AMBIENT else 0
+        next_task = _ALL_AMBIENT[idx] if _ALL_AMBIENT else {"label": "none", "category": "?"}
+        history_count = len(state.get("history", []))
+        result_count = len(list(AMBIENT_RESULTS_DIR.glob("*.md")))
+        running = "🔴 RUNNING" if _ambient_running else "⚪ idle"
+
+        await reply_html(update,
+            f"<b>🔄 Ambient Work System</b>\n\n"
+            f"Status: {enabled}{paused}\n"
+            f"Engine: {running}\n"
+            f"Total tasks in rotation: {len(_ALL_AMBIENT)}\n"
+            f"Completed: {history_count}\n"
+            f"Results saved: {result_count}\n"
+            f"Next up: [{next_task['category']}] {next_task['label']}\n\n"
+            f"<b>Commands:</b>\n"
+            f"/ambient on — enable\n"
+            f"/ambient off — disable\n"
+            f"/ambient pause 2 — pause for 2 hours\n"
+            f"/ambient results — see recent output\n"
+            f"/ambient show — read latest result\n"
+            f"/ambient next — see upcoming queue"
+        )
+
+
 async def build_daily_brief():
     """Build the full rich daily brief. Returns list of message strings."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -3113,6 +3515,7 @@ def main():
     app.add_handler(CommandHandler("overnight", cmd_overnight))
     app.add_handler(CommandHandler("predict", cmd_predict))
     app.add_handler(CommandHandler("signal", cmd_signal))
+    app.add_handler(CommandHandler("ambient", cmd_ambient))
 
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
@@ -3129,6 +3532,7 @@ def main():
         app.job_queue.run_daily(scheduled_brief, time=time(hour=8, minute=0))
         app.job_queue.run_daily(run_overnight_tasks, time=time(hour=2, minute=0))
         app.job_queue.run_repeating(memory_flush, interval=1800, first=300)  # every 30 min, first at 5 min
+        app.job_queue.run_repeating(run_ambient_loop, interval=2700, first=120)  # every 45 min, first at 2 min
 
     logger.info("Device-Link bridge starting (collab mode)...")
     logger.info("Chat: %d | Rounds: %d | Left: %s | Right: %s",
