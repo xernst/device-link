@@ -693,6 +693,59 @@ def mc_update_task(task_id, status, outcome="", result_preview=""):
 mc_ensure_agents()
 
 
+def mc_heartbeat():
+    """Update last_seen for all agents so MC doesn't show them as offline."""
+    if not MC_DB_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+        # Update last_seen for all agents
+        conn.execute(
+            "UPDATE agents SET last_seen = ?, updated_at = ? WHERE workspace_id = 1",
+            (now, now)
+        )
+        # Main is always "busy" (running the bot)
+        conn.execute(
+            "UPDATE agents SET status = 'busy' WHERE name = 'Main (Orchestrator)' AND workspace_id = 1"
+        )
+        # Fix any agents stuck on "offline" — if bot is running, they're at least idle
+        conn.execute(
+            "UPDATE agents SET status = 'idle' WHERE status = 'offline' AND workspace_id = 1 "
+            "AND name != 'Main (Orchestrator)'"
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("MC heartbeat failed: %s", e)
+
+
+def mc_post_message(from_agent, to_agent, content, conversation_id=None, message_type="text", metadata=None):
+    """Write a message to MC's messages table for Agent Comms visibility."""
+    if not MC_DB_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(MC_DB_PATH))
+        now = int(datetime.now().timestamp())
+        if not conversation_id:
+            conversation_id = f"telegram_{datetime.now().strftime('%Y%m%d')}"
+        meta_json = json.dumps(metadata) if metadata else None
+        conn.execute(
+            "INSERT INTO messages (conversation_id, from_agent, to_agent, content, message_type, metadata, created_at, workspace_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            (conversation_id, from_agent, to_agent or "", content[:4000], message_type, meta_json, now)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("MC post_message failed: %s", e)
+
+
+async def mc_heartbeat_job(context):
+    """Periodic heartbeat job for Mission Control agent liveness."""
+    mc_heartbeat()
+
+
 # --- Task dispatch ---
 async def dispatch_task(brain, task):
     proc = await asyncio.create_subprocess_exec(
@@ -2260,17 +2313,22 @@ async def run_and_notify(update, brain, task):
     _direct_tasks_active += 1
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
     # --- MC sync: mark agent busy + create task ---
+    brain_name = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])["name"]
     mc_update_agent(brain, "busy", task[:100])
     mc_task_id = mc_create_task(brain, task[:200], priority="medium")
+    mc_post_message("josh", brain_name, task[:500], message_type="text",
+                    metadata={"source": "telegram", "type": "dispatch"})
     try:
         code, stdout, stderr = await dispatch_task(brain, task)
         if code == 0:
             result = truncate(stdout.strip(), 3000) if stdout.strip() else "(no output)"
             # Log to second-brain ledger
             log_to_ledger(brain, task[:200], "pipeline", "completed", stdout.strip()[:300])
-            # --- MC sync: task done, agent idle ---
+            # --- MC sync: task done, agent idle, post result ---
             mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
             mc_update_agent(brain, "idle", f"Completed: {task[:80]}")
+            mc_post_message(brain_name, "josh", stdout.strip()[:2000], message_type="text",
+                            metadata={"source": "brain_result", "status": "completed"})
             # Review gate — send executive summary before full result
             review = await review_result(brain, task, stdout.strip())
             if review:
@@ -2288,6 +2346,8 @@ async def run_and_notify(update, brain, task):
             # --- MC sync: task failed, agent idle ---
             mc_update_task(mc_task_id, "failed", outcome=stderr.strip()[:300])
             mc_update_agent(brain, "idle", f"Failed: {task[:80]}")
+            mc_post_message(brain_name, "josh", f"Task failed (exit {code}): {stderr.strip()[:500]}",
+                            message_type="status", metadata={"source": "brain_result", "status": "failed"})
             err = truncate(stderr.strip() or stdout.strip(), 2000)
             await reply_html(update, f"❌ <b>{brain} failed</b> (exit {code}):\n<pre>{html_escape(err)}</pre>")
     except asyncio.TimeoutError:
@@ -2309,10 +2369,14 @@ async def run_collab_pipeline(update, task, rounds=2):
     global _direct_tasks_active
     _direct_tasks_active += 1
     COLLAB_WALL_TIMEOUT = 900  # 15 min total wall-clock limit
-    # --- MC sync: both brains busy + create collab task ---
+    # --- MC sync: both brains busy + create collab task + post comms ---
     mc_update_agent("left", "busy", f"Collab: {task[:80]}")
     mc_update_agent("right", "busy", f"Collab: {task[:80]}")
     mc_task_id = mc_create_task("collab", task[:200], task_description="Collaborative pipeline", priority="high")
+    mc_post_message("josh", "Left Brain", f"[Collab] {task[:400]}", message_type="text",
+                    metadata={"source": "telegram", "type": "collab_dispatch"})
+    mc_post_message("josh", "Right Brain", f"[Collab] {task[:400]}", message_type="text",
+                    metadata={"source": "telegram", "type": "collab_dispatch"})
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", TRIGGER_SCRIPT, "collab", "--rounds", str(rounds), task,
@@ -2386,6 +2450,8 @@ async def run_collab_pipeline(update, task, rounds=2):
                 mc_update_task(mc_task_id, "done", result_preview=deliverable[:500])
                 mc_update_agent("left", "idle", f"Collab done: {task[:80]}")
                 mc_update_agent("right", "idle", f"Collab done: {task[:80]}")
+                mc_post_message("Left Brain", "josh", deliverable[:1500],
+                                message_type="text", metadata={"source": "collab_result", "status": "completed"})
                 await update.message.reply_text("Final Result:")
                 chunks = [deliverable[i:i+3500] for i in range(0, len(deliverable), 3500)]
                 for chunk in chunks:
@@ -2624,17 +2690,22 @@ async def run_and_notify_from_msg(message, brain, task):
     global _direct_tasks_active
     _direct_tasks_active += 1
     emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
-    # --- MC sync: mark agent busy + create task ---
+    # --- MC sync: mark agent busy + create task + post comms ---
+    brain_name = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])["name"]
     mc_update_agent(brain, "busy", task[:100])
     mc_task_id = mc_create_task(brain, task[:200], priority="medium")
+    mc_post_message("josh", brain_name, task[:500], message_type="text",
+                    metadata={"source": "telegram", "type": "dispatch"})
     try:
         code, stdout, stderr = await dispatch_task(brain, task)
         if code == 0:
             result = truncate(stdout.strip(), 3000) if stdout.strip() else "(no output)"
             log_to_ledger(brain, task[:200], "pipeline", "completed", stdout.strip()[:300])
-            # --- MC sync: task done, agent idle ---
+            # --- MC sync: task done, agent idle, post result ---
             mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
             mc_update_agent(brain, "idle", f"Completed: {task[:80]}")
+            mc_post_message(brain_name, "josh", stdout.strip()[:2000], message_type="text",
+                            metadata={"source": "brain_result", "status": "completed"})
             review = await review_result(brain, task, stdout.strip())
             if review:
                 await message.reply_text(f"📝 Review ({brain}):\n{review}")
@@ -2644,9 +2715,10 @@ async def run_and_notify_from_msg(message, brain, task):
             await message.reply_text(f"{emoji} {brain.capitalize()} brain done:\n\n{result}")
         else:
             log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
-            # --- MC sync: task failed, agent idle ---
             mc_update_task(mc_task_id, "failed", outcome=stderr.strip()[:300])
             mc_update_agent(brain, "idle", f"Failed: {task[:80]}")
+            mc_post_message(brain_name, "josh", f"Task failed (exit {code}): {stderr.strip()[:500]}",
+                            message_type="status", metadata={"source": "brain_result", "status": "failed"})
             err = truncate(stderr.strip() or stdout.strip(), 2000)
             await message.reply_text(f"❌ {brain} failed (exit {code}):\n{err}")
     except asyncio.TimeoutError:
@@ -3205,6 +3277,9 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
             log_to_ledger(brain, f"[ambient] {label}"[:200], "ambient", "completed", stdout.strip()[:300])
             mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
             mc_update_agent(brain, "idle", f"Ambient done: {label[:60]}")
+            ambient_brain_name = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])["name"]
+            mc_post_message(ambient_brain_name, "josh", f"[Ambient: {label}] {stdout.strip()[:1500]}",
+                            message_type="text", metadata={"source": "ambient", "category": category})
 
             # Notify user with a brief summary (don't spam — keep it short)
             preview = stdout.strip()[:300]
@@ -3533,6 +3608,7 @@ def main():
         app.job_queue.run_daily(run_overnight_tasks, time=time(hour=2, minute=0))
         app.job_queue.run_repeating(memory_flush, interval=1800, first=300)  # every 30 min, first at 5 min
         app.job_queue.run_repeating(run_ambient_loop, interval=2700, first=120)  # every 45 min, first at 2 min
+        app.job_queue.run_repeating(mc_heartbeat_job, interval=120, first=10)  # every 2 min, first at 10s
 
     logger.info("Device-Link bridge starting (collab mode)...")
     logger.info("Chat: %d | Rounds: %d | Left: %s | Right: %s",
