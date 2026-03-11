@@ -1290,6 +1290,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/inbox /note /journal /digest /connections\n\n"
         "<b>🔍 Web:</b> /search <i>or say 'search for...'</i>\n"
         "<b>📡 Trends:</b> /trends <i>topic</i> — last 30 days across platforms\n"
+        "<b>📊 Predict:</b> /predict — LMSR prediction market calculator\n"
         "<b>💡 Suggest:</b> /suggest — let the bot suggest what to work on\n"
         "<b>🌙 Overnight:</b> /overnight <i>task</i> — queue for 2 AM\n"
         "<b>🧠 Memory:</b> /remember <i>query</i>\n"
@@ -1308,6 +1309,203 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /search <query>\nExample: /search voice AI recruiting APIs")
         return
     await search_and_summarize(query, update, raw_query=True)
+
+
+# --- LMSR Prediction Market Calculator ---
+import math
+
+
+def lmsr_cost(q, b):
+    """LMSR cost function: C(q) = b * ln(sum(e^(qi/b)))"""
+    return b * math.log(sum(math.exp(qi / b) for qi in q))
+
+
+def lmsr_price(q, b, outcome_idx):
+    """LMSR price for a specific outcome: softmax(qi/b)"""
+    exps = [math.exp(qi / b) for qi in q]
+    return exps[outcome_idx] / sum(exps)
+
+
+def lmsr_prices(q, b):
+    """All LMSR prices (probabilities) for each outcome."""
+    exps = [math.exp(qi / b) for qi in q]
+    total = sum(exps)
+    return [e / total for e in exps]
+
+
+def lmsr_buy_cost(q, b, outcome_idx, shares):
+    """Cost to buy `shares` of outcome `outcome_idx`."""
+    q_before = list(q)
+    q_after = list(q)
+    q_after[outcome_idx] += shares
+    return lmsr_cost(q_after, b) - lmsr_cost(q_before, b)
+
+
+def lmsr_edge(market_price, true_prob):
+    """Expected value edge: EV = true_prob * (1 - market_price) - (1 - true_prob) * market_price"""
+    return true_prob * (1.0 - market_price) - (1.0 - true_prob) * market_price
+
+
+def lmsr_max_loss(b, n_outcomes=2):
+    """Maximum loss for the market maker: b * ln(n)"""
+    return b * math.log(n_outcomes)
+
+
+@authorized
+async def cmd_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """LMSR prediction market calculator.
+
+    Usage:
+      /predict                          — show help
+      /predict price 60                 — what does a 60% market look like
+      /predict edge 0.60 0.72           — edge if market=60%, you think=72%
+      /predict cost 0.55 100 50         — cost to buy 50 YES shares at 55%, b=100
+      /predict analyze <question>       — LLM analyzes a prediction market question
+    """
+    args = " ".join(context.args).strip() if context.args else ""
+
+    if not args:
+        await reply_html(update,
+            "<b>📊 LMSR Prediction Market Calculator</b>\n\n"
+            "<b>Commands:</b>\n"
+            "<code>/predict price 60</code> — market at 60%\n"
+            "<code>/predict edge 0.60 0.72</code> — your edge (market vs your estimate)\n"
+            "<code>/predict cost 0.55 100 50</code> — cost to buy 50 shares (price, b, qty)\n"
+            "<code>/predict analyze Will X happen?</code> — LLM market analysis\n\n"
+            "<b>Theory:</b>\n"
+            "LMSR (Hanson 2002) uses C(q) = b·ln(Σe^(qi/b))\n"
+            "Prices are softmax — always valid probabilities that sum to 1.\n"
+            "Parameter b controls liquidity depth. Max maker loss = b·ln(n)."
+        )
+        return
+
+    parts = args.split(None, 1)
+    subcmd = parts[0].lower()
+    rest = parts[1] if len(parts) > 1 else ""
+
+    if subcmd == "price":
+        # /predict price 60  — show market state at this probability
+        try:
+            pct = float(rest.strip().rstrip("%"))
+            if pct > 1:
+                pct /= 100.0
+            b = 100.0
+            # Reverse-engineer q from desired price
+            # For binary: price_yes = e^(q_yes/b) / (e^(q_yes/b) + e^(q_no/b))
+            # With q_no=0: q_yes = b * ln(p/(1-p))
+            if pct <= 0.01 or pct >= 0.99:
+                await update.message.reply_text("Price must be between 1% and 99%")
+                return
+            q_yes = b * math.log(pct / (1.0 - pct))
+            q = [q_yes, 0.0]
+            prices = lmsr_prices(q, b)
+            max_loss = lmsr_max_loss(b)
+
+            # Cost to buy 10 more YES shares
+            cost_10 = lmsr_buy_cost(q, b, 0, 10)
+            new_prices = lmsr_prices([q[0] + 10, q[1]], b)
+
+            await reply_html(update,
+                f"<b>📊 Market State @ {pct*100:.1f}%</b>\n\n"
+                f"YES price: <b>{prices[0]*100:.1f}%</b> (${prices[0]:.4f})\n"
+                f"NO price: <b>{prices[1]*100:.1f}%</b> (${prices[1]:.4f})\n"
+                f"Liquidity (b): {b}\n"
+                f"Max maker loss: ${max_loss:.2f}\n\n"
+                f"<b>If you buy 10 YES shares:</b>\n"
+                f"Cost: ${cost_10:.2f} (avg ${cost_10/10:.4f}/share)\n"
+                f"New YES price: {new_prices[0]*100:.1f}%\n"
+                f"Price impact: +{(new_prices[0]-prices[0])*100:.1f}pp"
+            )
+        except (ValueError, ZeroDivisionError):
+            await update.message.reply_text("Usage: /predict price 60 (percentage)")
+
+    elif subcmd == "edge":
+        # /predict edge 0.60 0.72  — market price vs your true estimate
+        try:
+            vals = rest.strip().split()
+            market_p = float(vals[0])
+            true_p = float(vals[1])
+            if market_p > 1:
+                market_p /= 100.0
+            if true_p > 1:
+                true_p /= 100.0
+
+            ev = lmsr_edge(market_p, true_p)
+            kelly = (true_p * (1.0 - market_p) - (1.0 - true_p) * market_p) / (1.0 - market_p) if market_p < 1 else 0
+
+            direction = "BUY YES ✅" if ev > 0 else "BUY NO 🔴" if ev < 0 else "NO EDGE ⚪"
+            await reply_html(update,
+                f"<b>📊 Edge Analysis</b>\n\n"
+                f"Market price: <b>{market_p*100:.1f}%</b>\n"
+                f"Your estimate: <b>{true_p*100:.1f}%</b>\n"
+                f"Edge (EV): <b>{ev*100:.2f}%</b>\n"
+                f"Kelly fraction: <b>{kelly*100:.1f}%</b> of bankroll\n\n"
+                f"Signal: <b>{direction}</b>\n\n"
+                f"<i>EV = p_true × (1 - p_market) - (1 - p_true) × p_market</i>"
+            )
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /predict edge 0.60 0.72 (market_price your_estimate)")
+
+    elif subcmd == "cost":
+        # /predict cost 0.55 100 50  — cost to buy shares at current price
+        try:
+            vals = rest.strip().split()
+            market_p = float(vals[0])
+            b = float(vals[1])
+            shares = float(vals[2])
+            if market_p > 1:
+                market_p /= 100.0
+
+            q_yes = b * math.log(market_p / (1.0 - market_p))
+            q = [q_yes, 0.0]
+            cost = lmsr_buy_cost(q, b, 0, shares)
+            avg_price = cost / shares if shares else 0
+            new_prices = lmsr_prices([q[0] + shares, q[1]], b)
+            impact = new_prices[0] - market_p
+
+            await reply_html(update,
+                f"<b>📊 Trade Cost Calculator</b>\n\n"
+                f"Current price: {market_p*100:.1f}%\n"
+                f"Buying: {shares:.0f} YES shares\n"
+                f"Liquidity (b): {b}\n\n"
+                f"<b>Total cost: ${cost:.2f}</b>\n"
+                f"Avg price: ${avg_price:.4f}/share\n"
+                f"Slippage: {(avg_price - market_p)*100:.2f}pp\n"
+                f"New market price: {new_prices[0]*100:.1f}%\n"
+                f"Price impact: {impact*100:+.1f}pp\n\n"
+                f"<b>Max payout if YES: ${shares:.2f}</b>\n"
+                f"<b>Net profit if YES: ${shares - cost:.2f}</b>\n"
+                f"<b>Loss if NO: -${cost:.2f}</b>"
+            )
+        except (ValueError, IndexError):
+            await update.message.reply_text("Usage: /predict cost 0.55 100 50 (price, b, shares)")
+
+    elif subcmd == "analyze":
+        # LLM analysis of a prediction market question
+        if not rest:
+            await update.message.reply_text("Usage: /predict analyze Will AI replace recruiters by 2027?")
+            return
+        await send_typing(update)
+        prompt = (
+            "You are a prediction market analyst using LMSR (Logarithmic Market Scoring Rule) framework.\n\n"
+            f"Question: {rest[:500]}\n\n"
+            "Analyze this as a prediction market:\n"
+            "1. **Base rate**: What's the historical/prior probability?\n"
+            "2. **Current signals**: What evidence shifts the probability up or down?\n"
+            "3. **Your estimate**: What probability would you assign? (be specific, e.g. 67%)\n"
+            "4. **Key uncertainties**: What could swing this dramatically either way?\n"
+            "5. **Edge opportunities**: If a market existed at X%, where's the mispricing?\n\n"
+            "Be quantitative. Use numbers. Reference actual evidence. No hedging."
+        )
+        response = await ask_llm(prompt, timeout=60, retries=1)
+        if response and not response.startswith("("):
+            conversation_history.append(("assistant", f"[predict: {rest[:100]}]\n{response[:300]}"))
+            save_message("assistant", response, route="predict")
+            await reply_html(update, truncate(response, 4000))
+        else:
+            await update.message.reply_text(f"Analysis failed: {response[:200]}")
+    else:
+        await update.message.reply_text(f"Unknown subcommand: {subcmd}. Try /predict for help.")
 
 
 # --- Brain skill commands ---
@@ -2523,6 +2721,7 @@ def main():
     app.add_handler(CommandHandler("suggest", cmd_suggest))
     app.add_handler(CommandHandler("trends", cmd_trends))
     app.add_handler(CommandHandler("overnight", cmd_overnight))
+    app.add_handler(CommandHandler("predict", cmd_predict))
 
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
