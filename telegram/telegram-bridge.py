@@ -557,17 +557,25 @@ def log_to_ledger(brain, task, mode, status, result_preview=""):
         logger.error("Ledger write failed: %s", e)
 
 
-# --- Review Gate ---
+# --- Review Gate (Superpowers-style verification) ---
 async def review_result(brain, task, result_text):
-    """Run result through Claude review gate. Returns 2-3 sentence summary flagging issues."""
+    """Run result through Claude review gate with verification checks.
+    Inspired by superpowers 'verification-before-completion' skill:
+    Evidence before claims, always. Check for unsupported assertions."""
     if not result_text or len(result_text.strip()) < 50:
         return None
     review_prompt = (
-        f"You are reviewing a task result from the {brain} brain of an AI swarm.\n"
+        f"You are a Senior Code Reviewer and Evidence Collector reviewing a task result "
+        f"from the {brain} brain of an AI swarm.\n"
         f"Task: {task[:200]}\n\n"
         f"Result (first 1500 chars):\n{result_text[:1500]}\n\n"
-        "Give a 2-3 sentence executive summary. Flag any issues, gaps, or concerns. "
-        "If the result looks solid, say so briefly. Be direct."
+        "Review with these criteria (inspired by the 'superpowers' verification framework):\n"
+        "1. EVIDENCE CHECK: Does the result contain specific, verifiable claims? Or just vague assertions?\n"
+        "2. COMPLETENESS: Does it address all aspects of the original task?\n"
+        "3. ACTIONABILITY: Can the user take concrete next steps from this?\n"
+        "4. QUALITY RATING: Rate as ✅ SOLID, ⚠️ GAPS, or ❌ NEEDS REDO\n\n"
+        "Give a 2-3 sentence executive summary. Start with the quality rating emoji. "
+        "If anything is missing or unverified, flag it specifically. Be direct and concise."
     )
     try:
         review = await ask_llm(review_prompt, timeout=30)
@@ -1457,6 +1465,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>📓 Second Brain:</b>\n"
         "/inbox /note /journal /digest /connections\n\n"
         "<b>🔍 Web:</b> /search <i>or say 'search for...'</i>\n"
+        "<b>🌐 Research:</b> /web <i>topic</i> — deep web research via brain\n"
+        "<b>🤖 Agents:</b> /agents — browse 88+ specialist agents\n"
         "<b>📡 Trends:</b> /trends <i>topic</i> — last 30 days across platforms\n"
         "<b>📊 Predict:</b> /predict — LMSR market maker math\n"
         "<b>🎯 Signal:</b> /signal — Monte Carlo confidence scoring\n"
@@ -3069,121 +3079,163 @@ AMBIENT_TASKS = {
     "income": [
         {
             "brain": "left",
-            "task": "Research current high-demand freelance skills on Upwork, Toptal, and Fiverr for 2026. "
-                    "Identify 3 specific micro-SaaS or AI-agent niches that a solo developer with Claude/AI expertise "
-                    "could build and monetize within 2 weeks. For each, estimate monthly revenue potential, "
-                    "competition level, and a one-paragraph build plan. Output as actionable markdown.",
+            "task": "You are a Growth Hacker and Outbound Strategist. Research current high-demand freelance skills "
+                    "on Upwork, Toptal, and Fiverr for 2026. Identify 3 specific micro-SaaS or AI-agent niches that "
+                    "a solo developer with Claude/AI expertise could build and monetize within 2 weeks. For each, "
+                    "estimate monthly revenue potential, competition level, and a one-paragraph build plan. "
+                    "VERIFICATION: For each opportunity, cite at least one real marketplace listing or trend signal. "
+                    "Output as actionable markdown.",
             "label": "Freelance opportunity scan",
         },
         {
             "brain": "right",
-            "task": "Generate 3 creative AI-powered product ideas that could be launched as paid tools or services "
-                    "within 1-2 weeks using existing Device Link infrastructure (3 Macs, Claude, Telegram bot). "
-                    "For each idea: name it, describe the value prop, target audience, pricing model, and a quick "
-                    "marketing hook. Think outside the box — what would people pay $20-50/mo for?",
+            "task": "You are a Product Visionary and Brand Guardian. Generate 3 creative AI-powered product ideas "
+                    "that could be launched as paid tools or services within 1-2 weeks using existing Device Link "
+                    "infrastructure (3 Macs, Claude, Telegram bot). For each idea: name it, describe the value prop, "
+                    "target audience, pricing model, and a quick marketing hook. Think outside the box — what would "
+                    "people pay $20-50/mo for? VERIFICATION: Include a comparable existing product for each idea.",
             "label": "Product ideation",
         },
         {
             "brain": "left",
-            "task": "Analyze the current AI agent marketplace (AgentHub, CrewAI marketplace, OpenAI GPT store, "
-                    "Claude artifacts). Identify gaps where a multi-agent swarm like Device Link has a competitive "
-                    "edge. Suggest 2 concrete agent-as-a-service offerings with pricing, technical requirements, "
-                    "and a go-to-market strategy. Be specific and actionable.",
+            "task": "You are a Pipeline Analyst and Sales Engineer. Analyze the current AI agent marketplace (AgentHub, "
+                    "CrewAI marketplace, OpenAI GPT store, Claude artifacts). Identify gaps where a multi-agent swarm "
+                    "like Device Link has a competitive edge. Suggest 2 concrete agent-as-a-service offerings with "
+                    "pricing, technical requirements, and a go-to-market strategy. VERIFICATION: Reference at least 2 "
+                    "real marketplace listings to support your gap analysis. Be specific and actionable.",
             "label": "Agent marketplace analysis",
         },
         {
             "brain": "right",
-            "task": "Draft a compelling landing page copy (headline, subheadline, 3 benefit bullets, CTA) for "
-                    "an AI automation service targeting small business owners. The service uses a multi-agent AI swarm "
-                    "to handle research, content creation, and technical tasks 24/7. Make it punchy, modern, and "
-                    "conversion-focused. Include pricing tier suggestions.",
+            "task": "You are a Content Creator and Conversion Specialist. Draft a compelling landing page copy "
+                    "(headline, subheadline, 3 benefit bullets, CTA) for an AI automation service targeting small "
+                    "business owners. The service uses a multi-agent AI swarm to handle research, content creation, "
+                    "and technical tasks 24/7. Make it punchy, modern, and conversion-focused. Include pricing tier "
+                    "suggestions. VERIFICATION: Analyze 1-2 competitor landing pages and explain why yours is better.",
             "label": "Landing page copy draft",
         },
         {
             "brain": "left",
-            "task": "Research trending GitHub repos, ProductHunt launches, and HackerNews front-page projects from "
-                    "the past 7 days in the AI/automation space. Identify patterns and underserved niches. "
-                    "Suggest 2 open-source tools or libraries that could be built to gain traction and later "
-                    "monetized via premium features. Include repo naming, README outline, and launch strategy.",
+            "task": "You are a Trend Researcher and Discovery Coach. Research trending GitHub repos, ProductHunt "
+                    "launches, and HackerNews front-page projects from the past 7 days in the AI/automation space. "
+                    "Identify patterns and underserved niches. Suggest 2 open-source tools or libraries that could be "
+                    "built to gain traction and later monetized via premium features. VERIFICATION: Include actual "
+                    "repo URLs or PH links. Include repo naming, README outline, and launch strategy.",
             "label": "Open source opportunity scan",
+        },
+        {
+            "brain": "left",
+            "task": "You are an SEO Specialist and PPC Campaign Strategist. Research profitable affiliate programs "
+                    "and referral opportunities in the AI/developer tools space. Find 5 programs with recurring "
+                    "commissions (SaaS tools, hosting, APIs) that pay $20+/referral or 20%+ recurring. For each: "
+                    "name, commission structure, cookie duration, and a content strategy to drive signups. "
+                    "VERIFICATION: Include actual program URLs and current commission rates.",
+            "label": "Affiliate opportunity scan",
         },
     ],
     "project": [
         {
             "brain": "left",
-            "task": "Review the AI Screening Assistant project for Naples/Xwell Spa. Analyze the current technical "
-                    "implementation plan and identify: 1) The single highest-risk technical component, 2) A concrete "
-                    "next step that could be built today, 3) Any missing security or compliance considerations for "
-                    "handling candidate data (CCPA, etc). Output actionable recommendations.",
+            "task": "You are a Senior Backend Architect and Security Engineer. Review the AI Screening Assistant "
+                    "project for Naples/Xwell Spa. Analyze the current technical implementation plan and identify: "
+                    "1) The single highest-risk technical component, 2) A concrete next step that could be built "
+                    "today, 3) Any missing security or compliance considerations for handling candidate data "
+                    "(CCPA, etc). VERIFICATION: Cite specific regulations that apply. Output actionable recommendations.",
             "label": "AI Screening Assistant review",
         },
         {
             "brain": "right",
-            "task": "For the AI Screening Assistant project: design the candidate experience flow from receiving "
-                    "the screening call to getting hired. Map out the emotional journey, identify friction points, "
-                    "and suggest 3 UX improvements that would make candidates feel valued (not interrogated by AI). "
-                    "Include sample conversation scripts for the voice AI.",
+            "task": "You are a UX Researcher and Behavioral Nudge Engine. For the AI Screening Assistant project: "
+                    "design the candidate experience flow from receiving the screening call to getting hired. Map out "
+                    "the emotional journey, identify friction points, and suggest 3 UX improvements that would make "
+                    "candidates feel valued (not interrogated by AI). Include sample conversation scripts for the "
+                    "voice AI. VERIFICATION: Reference at least one UX research study on AI-mediated hiring.",
             "label": "Screening UX design",
         },
         {
             "brain": "left",
-            "task": "Audit the Device Link codebase itself. Review telegram-bridge.py for: 1) Error handling gaps "
-                    "that could cause silent failures, 2) Performance bottlenecks in the message handling pipeline, "
-                    "3) Security concerns (token exposure, injection risks). Suggest the top 3 improvements with "
-                    "specific code-level recommendations.",
+            "task": "You are an Evidence Collector and Performance Benchmarker. Audit the Device Link codebase "
+                    "itself. Review telegram-bridge.py for: 1) Error handling gaps that could cause silent failures, "
+                    "2) Performance bottlenecks in the message handling pipeline, 3) Security concerns (token exposure, "
+                    "injection risks). VERIFICATION: Provide specific line numbers or code patterns for each finding. "
+                    "Suggest the top 3 improvements with specific code-level recommendations.",
             "label": "Device Link self-audit",
         },
     ],
     "growth": [
         {
             "brain": "right",
-            "task": "Write a Twitter/X thread (8-10 tweets) about building a personal AI agent swarm with 3 Mac laptops. "
-                    "Cover: the setup, what it does, surprising capabilities, and lessons learned. Make it authentic, "
-                    "technically interesting but accessible. Include hook tweet and a CTA. Style: builder sharing "
-                    "their work, not salesy.",
+            "task": "You are a Twitter Engager and LinkedIn Content Creator. Write a Twitter/X thread (8-10 tweets) "
+                    "about building a personal AI agent swarm with 3 Mac laptops. Cover: the setup, what it does, "
+                    "surprising capabilities, and lessons learned. Make it authentic, technically interesting but "
+                    "accessible. Include hook tweet and a CTA. VERIFICATION: Analyze 2 viral AI builder threads and "
+                    "explain what patterns you borrowed. Style: builder sharing their work, not salesy.",
             "label": "Twitter thread draft",
         },
         {
             "brain": "left",
-            "task": "Research SEO keywords and content opportunities around 'AI agent swarm', 'multi-agent system', "
-                    "'personal AI assistant setup', and 'Claude Code automation'. Identify 5 long-tail keywords with "
-                    "search volume, suggest blog post titles for each, and outline the highest-opportunity post in "
-                    "detail (H2 structure, word count target, key points to cover).",
+            "task": "You are an SEO Specialist and Content Strategist. Research SEO keywords and content opportunities "
+                    "around 'AI agent swarm', 'multi-agent system', 'personal AI assistant setup', and 'Claude Code "
+                    "automation'. Identify 5 long-tail keywords with search volume, suggest blog post titles for each, "
+                    "and outline the highest-opportunity post in detail (H2 structure, word count target, key points). "
+                    "VERIFICATION: Include search volume estimates and difficulty scores for each keyword.",
             "label": "SEO content research",
         },
         {
             "brain": "right",
-            "task": "Design a short-form video script (60-90 seconds) showing the Device Link AI swarm in action. "
-                    "The hook should grab attention in 3 seconds. Show: sending a task via Telegram, both brains "
-                    "working simultaneously, results coming back. End with a memorable takeaway. Write the full "
-                    "script with visual directions and voiceover text.",
+            "task": "You are a TikTok Strategist and Image Prompt Engineer. Design a short-form video script "
+                    "(60-90 seconds) showing the Device Link AI swarm in action. The hook should grab attention in "
+                    "3 seconds. Show: sending a task via Telegram, both brains working simultaneously, results "
+                    "coming back. End with a memorable takeaway. VERIFICATION: Reference 2 trending tech demo video "
+                    "formats. Write the full script with visual directions and voiceover text.",
             "label": "Video script draft",
         },
     ],
     "research": [
         {
             "brain": "left",
-            "task": "Research the latest developments in AI agent frameworks (CrewAI, AutoGen, LangGraph, Claude Agent SDK, "
-                    "OpenAI Swarm) from the past 30 days. Compare their multi-agent orchestration approaches with "
-                    "Device Link's bash-based trigger system. Identify 2-3 features or patterns worth adopting. "
-                    "Be specific about implementation difficulty and expected benefits.",
+            "task": "You are an AI Engineer and LSP/Index Engineer. Research the latest developments in AI agent "
+                    "frameworks (CrewAI, AutoGen, LangGraph, Claude Agent SDK, OpenAI Swarm) from the past 30 days. "
+                    "Compare their multi-agent orchestration approaches with Device Link's bash-based trigger system. "
+                    "Identify 2-3 features or patterns worth adopting. VERIFICATION: Include specific version numbers, "
+                    "release dates, and GitHub star counts. Be specific about implementation difficulty and benefits.",
             "label": "AI framework landscape scan",
         },
         {
             "brain": "right",
-            "task": "Explore unconventional uses of a 3-machine AI swarm that most people wouldn't think of. "
-                    "Consider: automated negotiation, real-time market making simulation, creative writing partnerships, "
-                    "music composition, game AI testing, scientific hypothesis generation. Pick the 3 most promising "
-                    "and write a one-page concept for each.",
+            "task": "You are a Game Designer and Narrative Designer. Explore unconventional uses of a 3-machine AI "
+                    "swarm that most people wouldn't think of. Consider: automated negotiation, real-time market "
+                    "making simulation, creative writing partnerships, music composition, game AI testing, scientific "
+                    "hypothesis generation. Pick the 3 most promising and write a one-page concept for each. "
+                    "VERIFICATION: Include one real-world example or paper for each concept.",
             "label": "Creative swarm applications",
         },
         {
             "brain": "left",
-            "task": "Analyze the economics of running AI agents 24/7. Compare: Claude API costs vs local Ollama models "
-                    "vs hybrid approaches. Calculate break-even points for different workloads. Suggest an optimal "
-                    "cost-reduction strategy for Device Link that maintains quality for complex tasks while using "
-                    "local models for routine work. Include specific model recommendations.",
+            "task": "You are a Finance Tracker and Cost Optimization Analyst. Analyze the economics of running AI "
+                    "agents 24/7. Compare: Claude API costs vs local Ollama models vs hybrid approaches. Calculate "
+                    "break-even points for different workloads. Suggest an optimal cost-reduction strategy for Device "
+                    "Link that maintains quality for complex tasks while using local models for routine work. "
+                    "VERIFICATION: Include actual API pricing as of March 2026. Include specific model recommendations.",
             "label": "Cost optimization analysis",
+        },
+        {
+            "brain": "left",
+            "task": "You are a DevOps Automator and Infrastructure Maintainer. Research best practices for running "
+                    "persistent AI agent processes on macOS. Compare: launchd vs systemd-like alternatives, process "
+                    "supervision, health checking, auto-restart patterns, and log rotation. Identify 3 improvements "
+                    "for Device Link's current LaunchAgent setup. VERIFICATION: Test at least one recommendation "
+                    "against macOS 15+ compatibility. Output specific plist or config examples.",
+            "label": "Infrastructure best practices",
+        },
+        {
+            "brain": "right",
+            "task": "You are a Whimsy Injector and Brand Guardian. Design the 'personality' of the Device Link "
+                    "swarm — how should the left brain vs right brain communicate differently? Create a style guide "
+                    "for each brain's Telegram responses: tone, emoji usage, response length, humor level. Include "
+                    "5 example responses for each brain handling the same task. VERIFICATION: A/B test the examples "
+                    "by rating them against user engagement principles.",
+            "label": "Swarm personality design",
         },
     ],
 }
@@ -3317,6 +3369,104 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
         # Keep only last 50 history entries
         state["history"] = state["history"][-50:]
         _save_ambient_state(state)
+
+
+# --- /web command: Web research & automation dispatch ---
+@authorized
+async def cmd_web(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dispatch a web research task to a brain with deep-research instructions.
+    Usage: /web <query> — research with left brain
+           /web right <query> — research with right brain (creative angle)
+    Inspired by page-agent ReAct patterns: observe-think-act loop."""
+    args = " ".join(context.args).strip() if context.args else ""
+    if not args:
+        await reply_html(update,
+            "<b>🌐 Web Research</b>\n\n"
+            "<code>/web AI agent pricing models 2026</code>\n"
+            "<code>/web right startup landing page trends</code>\n\n"
+            "Dispatches deep research to a brain using a structured observe→think→act loop.\n"
+            "Results saved to results dir and visible in Mission Control."
+        )
+        return
+
+    # Parse brain selection
+    brain = "left"
+    query = args
+    if args.lower().startswith("right "):
+        brain = "right"
+        query = args[6:].strip()
+    elif args.lower().startswith("left "):
+        brain = "left"
+        query = args[5:].strip()
+
+    await send_typing(update)
+    await reply_html(update, f"🌐 <b>Dispatching web research to {brain} brain:</b>\n{html_escape(query[:100])}")
+
+    # Enhanced web research prompt (page-agent inspired ReAct pattern)
+    web_task = (
+        f"You are a Trend Researcher and Analytics Reporter with deep web research expertise.\n\n"
+        f"RESEARCH TASK: {query}\n\n"
+        "Use a structured observe→think→act research loop:\n"
+        "1. OBSERVE: Search for and gather information from multiple sources on this topic\n"
+        "2. THINK: Analyze what you've found — identify patterns, contradictions, gaps\n"
+        "3. ACT: Synthesize findings into a structured research report\n\n"
+        "Your report MUST include:\n"
+        "- Executive Summary (2-3 sentences)\n"
+        "- Key Findings (numbered, with source citations where possible)\n"
+        "- Data Points (specific numbers, dates, or facts — no vague claims)\n"
+        "- Actionable Recommendations (what to do with this info)\n"
+        "- Confidence Level (high/medium/low for each finding)\n\n"
+        "VERIFICATION: Every claim must be backed by specific evidence. "
+        "If you're unsure about something, say so explicitly rather than guessing."
+    )
+
+    await run_and_notify(update, brain, web_task)
+
+
+# --- /agents command: list available agent personalities ---
+@authorized
+async def cmd_agents(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List available specialized agent personalities from agency-agents library.
+    Usage: /agents [division] — list agents in a division
+           /agents — list all divisions"""
+    args = " ".join(context.args).strip().lower() if context.args else ""
+    agents_dir = Path.home() / ".claude" / "agents"
+
+    if not agents_dir.exists():
+        await reply_html(update, "❌ No agents directory found at ~/.claude/agents/")
+        return
+
+    if not args:
+        # List all divisions
+        divisions = sorted([d.name for d in agents_dir.iterdir() if d.is_dir()])
+        counts = []
+        for d in divisions:
+            n = len(list((agents_dir / d).glob("*.md")))
+            counts.append(f"  • <b>{d}</b> ({n} agents)")
+        await reply_html(update,
+            f"<b>🤖 Agent Divisions ({len(divisions)}):</b>\n\n"
+            + "\n".join(counts)
+            + "\n\n<code>/agents engineering</code> — list agents in a division"
+        )
+    else:
+        # List agents in specific division
+        div_path = agents_dir / args
+        if not div_path.exists():
+            # Try fuzzy match
+            for d in agents_dir.iterdir():
+                if d.is_dir() and args in d.name.lower():
+                    div_path = d
+                    break
+        if not div_path.exists() or not div_path.is_dir():
+            await reply_html(update, f"❌ Division '<code>{html_escape(args)}</code>' not found.")
+            return
+        agent_files = sorted(div_path.glob("*.md"))
+        names = [f"  • {f.stem.replace('-', ' ').title()}" for f in agent_files]
+        await reply_html(update,
+            f"<b>🤖 {div_path.name.title()} Division ({len(names)} agents):</b>\n\n"
+            + "\n".join(names[:30])
+            + ("\n  ..." if len(names) > 30 else "")
+        )
 
 
 # --- /ambient command ---
@@ -3529,6 +3679,9 @@ async def build_daily_brief():
         "- `left: <task>` \u2014 analytical work\n"
         "- `right: <task>` \u2014 creative work\n"
         "- `both: <task>` \u2014 collaborative pipeline\n"
+        "- /web <query> \u2014 deep web research\n"
+        "- /agents \u2014 browse 88+ specialist agents\n"
+        "- /ambient \u2014 autonomous work system\n"
         "- /status \u2014 check swarm health\n"
         "- /results \u2014 show recent outputs"
     )
@@ -3591,6 +3744,8 @@ def main():
     app.add_handler(CommandHandler("predict", cmd_predict))
     app.add_handler(CommandHandler("signal", cmd_signal))
     app.add_handler(CommandHandler("ambient", cmd_ambient))
+    app.add_handler(CommandHandler("web", cmd_web))
+    app.add_handler(CommandHandler("agents", cmd_agents))
 
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
