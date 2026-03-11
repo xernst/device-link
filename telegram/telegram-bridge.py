@@ -769,6 +769,398 @@ async def dispatch_task(brain, task):
         raise
 
 
+# =============================================================================
+# EXECUTION LOOP ENGINE — plan → execute → test → reflect cycle
+# Circuit breaker, sandboxing, memory hierarchy, learning from mistakes
+# =============================================================================
+
+EXEC_LOOP_DIR = Path.home() / ".device-link" / "exec-loop"
+EXEC_LOOP_DIR.mkdir(parents=True, exist_ok=True)
+EXEC_MEMORY_DB = EXEC_LOOP_DIR / "loop-memory.db"
+
+# --- Failure Memory (vector-free: uses keyword similarity) ---
+def _init_exec_memory():
+    """Initialize execution loop memory DB for storing successes and failures."""
+    conn = sqlite3.connect(str(EXEC_MEMORY_DB))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS exec_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_hash TEXT NOT NULL,
+            task_text TEXT NOT NULL,
+            brain TEXT NOT NULL,
+            attempt INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            error_pattern TEXT,
+            error_message TEXT,
+            solution TEXT,
+            result_preview TEXT,
+            duration_secs REAL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS exec_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            error_signature TEXT UNIQUE NOT NULL,
+            frequency INTEGER DEFAULT 1,
+            last_solution TEXT,
+            last_task TEXT,
+            last_brain TEXT,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    # FTS for similarity search on past errors
+    try:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS exec_memory_fts
+            USING fts5(task_text, error_message, solution, content='exec_memory', content_rowid='id')
+        """)
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS exec_memory_fts_ai AFTER INSERT ON exec_memory BEGIN
+                INSERT INTO exec_memory_fts(rowid, task_text, error_message, solution)
+                VALUES (new.id, new.task_text, COALESCE(new.error_message,''), COALESCE(new.solution,''));
+            END
+        """)
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+
+_init_exec_memory()
+
+
+def _task_hash(task_text):
+    """Create a fuzzy hash for task similarity (first 100 chars, lowered, stripped)."""
+    import hashlib
+    normalized = re.sub(r'\s+', ' ', task_text[:200].lower().strip())
+    return hashlib.md5(normalized.encode()).hexdigest()[:12]
+
+
+def recall_past_failures(task_text, limit=3):
+    """Retrieve relevant past failures for a similar task. Memory hierarchy: check recent first."""
+    try:
+        conn = sqlite3.connect(str(EXEC_MEMORY_DB))
+        # Search by task hash first (exact match)
+        th = _task_hash(task_text)
+        rows = conn.execute(
+            "SELECT error_pattern, error_message, solution, brain, attempt "
+            "FROM exec_memory WHERE task_hash = ? AND status = 'failed' "
+            "ORDER BY timestamp DESC LIMIT ?", (th, limit)
+        ).fetchall()
+        if rows:
+            conn.close()
+            return [{"error_pattern": r[0], "error_message": r[1], "solution": r[2],
+                      "brain": r[3], "attempt": r[4]} for r in rows]
+        # FTS fuzzy search
+        keywords = " ".join(task_text.split()[:10])
+        rows = conn.execute(
+            "SELECT em.error_pattern, em.error_message, em.solution, em.brain, em.attempt "
+            "FROM exec_memory_fts AS fts JOIN exec_memory AS em ON fts.rowid = em.id "
+            "WHERE exec_memory_fts MATCH ? AND em.status = 'failed' "
+            "ORDER BY rank LIMIT ?", (keywords, limit)
+        ).fetchall()
+        conn.close()
+        return [{"error_pattern": r[0], "error_message": r[1], "solution": r[2],
+                  "brain": r[3], "attempt": r[4]} for r in rows]
+    except Exception as e:
+        logger.error("recall_past_failures error: %s", e)
+        return []
+
+
+def store_exec_result(task_text, brain, attempt, status, error_pattern=None,
+                       error_message=None, solution=None, result_preview=None, duration=None):
+    """Store execution result in memory for future learning."""
+    try:
+        conn = sqlite3.connect(str(EXEC_MEMORY_DB))
+        conn.execute(
+            "INSERT INTO exec_memory (task_hash, task_text, brain, attempt, status, "
+            "error_pattern, error_message, solution, result_preview, duration_secs, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (_task_hash(task_text), task_text[:500], brain, attempt, status,
+             error_pattern, error_message, solution, result_preview, duration,
+             datetime.now().isoformat())
+        )
+        # Update error patterns table
+        if error_pattern and status == "failed":
+            existing = conn.execute(
+                "SELECT frequency FROM exec_patterns WHERE error_signature = ?",
+                (error_pattern,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE exec_patterns SET frequency = frequency + 1, last_solution = ?, "
+                    "last_task = ?, last_brain = ?, updated_at = ? WHERE error_signature = ?",
+                    (solution, task_text[:200], brain, datetime.now().isoformat(), error_pattern)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO exec_patterns (error_signature, last_solution, last_task, "
+                    "last_brain, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (error_pattern, solution, task_text[:200], brain, datetime.now().isoformat())
+                )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error("store_exec_result error: %s", e)
+
+
+def classify_error(stderr_text):
+    """Extract error pattern/signature from stderr for matching against past failures."""
+    if not stderr_text:
+        return "unknown_error", "No error output"
+    text = stderr_text.strip()[:500]
+    # Common error patterns
+    patterns = [
+        (r'(?i)timeout|timed?\s*out', 'timeout'),
+        (r'(?i)connection\s*(refused|reset|error)', 'connection_error'),
+        (r'(?i)permission\s*denied', 'permission_denied'),
+        (r'(?i)out\s*of\s*memory|oom|memory\s*error', 'out_of_memory'),
+        (r'(?i)disk\s*(full|space)|no\s*space\s*left', 'disk_full'),
+        (r'(?i)not\s*found|no\s*such\s*file', 'not_found'),
+        (r'(?i)syntax\s*error|parse\s*error', 'syntax_error'),
+        (r'(?i)import\s*error|module\s*not\s*found', 'import_error'),
+        (r'(?i)rate\s*limit|429|too\s*many\s*requests', 'rate_limit'),
+        (r'(?i)auth.*fail|unauthorized|403|401', 'auth_error'),
+    ]
+    for pattern, label in patterns:
+        if re.search(pattern, text):
+            return label, text[:200]
+    # Default: first line of error
+    first_line = text.split('\n')[0][:100]
+    return f"unknown:{first_line[:50]}", text[:200]
+
+
+# --- Circuit Breaker ---
+_circuit_breaker = {}  # brain -> {"failures": int, "last_failure": datetime, "open_until": datetime}
+CIRCUIT_BREAKER_THRESHOLD = 3  # consecutive failures before opening circuit
+CIRCUIT_BREAKER_COOLDOWN = 300  # seconds to wait before retrying after circuit opens
+
+
+def check_circuit_breaker(brain):
+    """Check if the circuit breaker for a brain is open (too many failures).
+    Returns (is_open, reason) tuple."""
+    state = _circuit_breaker.get(brain)
+    if not state:
+        return False, None
+    if state.get("open_until"):
+        if datetime.now() < state["open_until"]:
+            remaining = (state["open_until"] - datetime.now()).seconds
+            return True, f"Circuit open for {brain} brain ({remaining}s remaining, {state['failures']} consecutive failures)"
+        else:
+            # Cooldown expired, half-open — allow one attempt
+            state["open_until"] = None
+            return False, None
+    return False, None
+
+
+def record_circuit_breaker(brain, success):
+    """Record success/failure for circuit breaker state."""
+    if brain not in _circuit_breaker:
+        _circuit_breaker[brain] = {"failures": 0, "last_failure": None, "open_until": None}
+    state = _circuit_breaker[brain]
+    if success:
+        state["failures"] = 0
+        state["open_until"] = None
+    else:
+        state["failures"] += 1
+        state["last_failure"] = datetime.now()
+        if state["failures"] >= CIRCUIT_BREAKER_THRESHOLD:
+            from datetime import timedelta
+            state["open_until"] = datetime.now() + timedelta(seconds=CIRCUIT_BREAKER_COOLDOWN)
+            logger.warning("Circuit breaker OPEN for %s brain (%d failures)", brain, state["failures"])
+
+
+# --- Execution Loop State (for resumability) ---
+EXEC_STATE_DIR = EXEC_LOOP_DIR / "active"
+EXEC_STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_loop_state(loop_id, state):
+    """Save execution loop state to disk for resumability after interruption."""
+    (EXEC_STATE_DIR / f"{loop_id}.json").write_text(json.dumps(state, indent=2, default=str))
+
+
+def load_loop_state(loop_id):
+    """Load saved execution loop state."""
+    path = EXEC_STATE_DIR / f"{loop_id}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return None
+
+
+def clear_loop_state(loop_id):
+    """Remove completed loop state."""
+    path = EXEC_STATE_DIR / f"{loop_id}.json"
+    path.unlink(missing_ok=True)
+
+
+async def exec_loop(brain, task, max_iterations=3, update=None):
+    """Execute a task with plan→execute→test→reflect cycle.
+
+    Args:
+        brain: which brain to dispatch to ("left", "right")
+        task: the task description
+        max_iterations: max retry attempts (circuit breaker stops infinite loops)
+        update: Telegram update for progress reporting (optional)
+
+    Returns:
+        (success, result_text, iterations_used, loop_id)
+    """
+    import time as _time
+    loop_id = f"{brain}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{_task_hash(task)}"
+
+    # Check circuit breaker first
+    is_open, reason = check_circuit_breaker(brain)
+    if is_open:
+        logger.warning("Exec loop blocked: %s", reason)
+        return False, f"⚡ Circuit breaker open: {reason}", 0, loop_id
+
+    # Check for past failures on similar tasks (learning from mistakes)
+    past_failures = recall_past_failures(task)
+    failure_context = ""
+    if past_failures:
+        failure_hints = []
+        for f in past_failures[:2]:
+            if f["solution"]:
+                failure_hints.append(f"- Past error: {f['error_pattern']} → Fix: {f['solution'][:100]}")
+            else:
+                failure_hints.append(f"- Past error: {f['error_pattern']} (no solution recorded)")
+        failure_context = (
+            "\n\nIMPORTANT — Past failures on similar tasks:\n"
+            + "\n".join(failure_hints)
+            + "\nAvoid repeating these mistakes. Adjust your approach accordingly."
+        )
+
+    # Save initial state for resumability
+    loop_state = {
+        "loop_id": loop_id,
+        "brain": brain,
+        "task": task[:500],
+        "max_iterations": max_iterations,
+        "iteration": 0,
+        "status": "started",
+        "history": [],
+        "started_at": datetime.now().isoformat(),
+    }
+    save_loop_state(loop_id, loop_state)
+
+    result_text = ""
+    for iteration in range(1, max_iterations + 1):
+        # Check circuit breaker before each iteration
+        is_open, reason = check_circuit_breaker(brain)
+        if is_open:
+            store_exec_result(task, brain, iteration, "circuit_break", error_pattern="circuit_breaker")
+            clear_loop_state(loop_id)
+            return False, f"⚡ Circuit breaker tripped: {reason}", iteration, loop_id
+
+        # Update state
+        loop_state["iteration"] = iteration
+        loop_state["status"] = "executing"
+        save_loop_state(loop_id, loop_state)
+
+        # --- PHASE 1: PLAN (augment task with failure context on retries) ---
+        augmented_task = task
+        if iteration > 1 and result_text:
+            # Reflection phase: include previous failure info
+            augmented_task = (
+                f"{task}\n\n"
+                f"RETRY ATTEMPT {iteration}/{max_iterations}. "
+                f"Previous attempt failed with:\n{result_text[:500]}\n\n"
+                f"Reflect on what went wrong and try a different approach. "
+                f"Do NOT repeat the same strategy that failed."
+                f"{failure_context}"
+            )
+        elif failure_context:
+            augmented_task = task + failure_context
+
+        # --- PHASE 2: EXECUTE ---
+        start_time = _time.monotonic()
+        try:
+            code, stdout, stderr = await dispatch_task(brain, augmented_task)
+            duration = _time.monotonic() - start_time
+        except asyncio.TimeoutError:
+            duration = _time.monotonic() - start_time
+            err_pattern, err_msg = "timeout", "Task execution timed out"
+            store_exec_result(task, brain, iteration, "failed",
+                               error_pattern=err_pattern, error_message=err_msg, duration=duration)
+            record_circuit_breaker(brain, False)
+            result_text = f"Timed out on iteration {iteration}"
+            loop_state["history"].append({"iteration": iteration, "status": "timeout", "duration": duration})
+            save_loop_state(loop_id, loop_state)
+            if update:
+                await update.message.reply_text(f"⏰ Iteration {iteration}/{max_iterations} timed out. Retrying...")
+            continue
+        except Exception as e:
+            duration = _time.monotonic() - start_time
+            err_pattern, err_msg = classify_error(str(e))
+            store_exec_result(task, brain, iteration, "failed",
+                               error_pattern=err_pattern, error_message=str(e)[:300], duration=duration)
+            record_circuit_breaker(brain, False)
+            result_text = f"Error on iteration {iteration}: {e}"
+            loop_state["history"].append({"iteration": iteration, "status": "error", "error": str(e)[:200]})
+            save_loop_state(loop_id, loop_state)
+            continue
+
+        # --- PHASE 3: TEST (check if result is valid) ---
+        if code == 0 and stdout.strip():
+            # Success — record and return
+            store_exec_result(task, brain, iteration, "success",
+                               result_preview=stdout.strip()[:300], duration=duration)
+            record_circuit_breaker(brain, True)
+            loop_state["status"] = "completed"
+            loop_state["history"].append({"iteration": iteration, "status": "success", "duration": duration})
+            save_loop_state(loop_id, loop_state)
+            clear_loop_state(loop_id)
+            return True, stdout.strip(), iteration, loop_id
+
+        # --- PHASE 4: REFLECT (analyze failure, store for learning) ---
+        err_pattern, err_msg = classify_error(stderr)
+        result_text = stderr.strip() if stderr.strip() else stdout.strip() or "(no output)"
+
+        # Generate reflection via LLM (what went wrong, how to fix)
+        reflection = None
+        try:
+            reflect_prompt = (
+                f"A task dispatched to the {brain} brain just failed.\n"
+                f"Task: {task[:200]}\n"
+                f"Error (exit {code}): {result_text[:400]}\n\n"
+                f"In 1-2 sentences: What is the root cause? What specific change would fix it?"
+            )
+            reflection = await ask_llm(reflect_prompt, timeout=20)
+            if reflection and reflection.startswith("("):
+                reflection = None
+        except Exception:
+            pass
+
+        store_exec_result(task, brain, iteration, "failed",
+                           error_pattern=err_pattern, error_message=err_msg,
+                           solution=reflection, result_preview=result_text[:300], duration=duration)
+        record_circuit_breaker(brain, False)
+
+        loop_state["history"].append({
+            "iteration": iteration, "status": "failed",
+            "error_pattern": err_pattern, "reflection": reflection,
+            "duration": duration,
+        })
+        save_loop_state(loop_id, loop_state)
+
+        if update and iteration < max_iterations:
+            msg = f"🔄 Iteration {iteration}/{max_iterations} failed ({err_pattern})"
+            if reflection:
+                msg += f"\n💡 Reflection: {reflection[:150]}"
+            msg += f"\nRetrying with adjusted approach..."
+            await update.message.reply_text(msg)
+
+    # All iterations exhausted
+    loop_state["status"] = "exhausted"
+    save_loop_state(loop_id, loop_state)
+    clear_loop_state(loop_id)
+    return False, result_text, max_iterations, loop_id
+
+
 async def ssh_check(host):
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1473,6 +1865,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>💡 Suggest:</b> /suggest — let the bot suggest what to work on\n"
         "<b>🌙 Overnight:</b> /overnight <i>task</i> — queue for 2 AM\n"
         "<b>🔄 Ambient:</b> /ambient — always-on productive work\n"
+        "<b>🔁 Loop:</b> /loop — exec loop with retries + learning\n"
         "<b>🧠 Memory:</b> /remember <i>query</i>\n"
         "<b>📬 Mailbox:</b> /mail • /mail left <i>msg</i>\n"
         "<b>⚡ Skills:</b> /skills • /newskill",
@@ -3301,6 +3694,12 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
     label = task_info["label"]
     category = task_info["category"]
 
+    # Check circuit breaker before committing to this task
+    is_open, reason = check_circuit_breaker(brain)
+    if is_open:
+        logger.info("Ambient: skipping — circuit breaker open for %s: %s", brain, reason)
+        return
+
     _ambient_running = True
     logger.info("Ambient: dispatching [%s/%s] %s to %s brain", category, label, task_text[:60], brain)
 
@@ -3310,10 +3709,13 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
                                  task_description=task_text[:500], priority="low")
 
     try:
-        code, stdout, stderr = await dispatch_task(brain, task_text)
+        # Use exec_loop for automatic retry with learning from mistakes
+        success, result_text, iterations, loop_id = await exec_loop(
+            brain, task_text, max_iterations=2  # max 2 attempts for ambient (don't burn cycles)
+        )
         now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        if code == 0 and stdout.strip():
+        if success and result_text:
             # Save result
             result_file = AMBIENT_RESULTS_DIR / f"{category}-{brain}-{now_str}.md"
             result_file.write_text(
@@ -3321,36 +3723,34 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
                 f"category: {category}\n"
                 f"label: {label}\n"
                 f"brain: {brain}\n"
+                f"iterations: {iterations}\n"
                 f"timestamp: {datetime.now().isoformat()}\n"
                 f"---\n\n"
                 f"# {label}\n\n"
-                f"{stdout.strip()}\n"
+                f"{result_text.strip()}\n"
             )
-            log_to_ledger(brain, f"[ambient] {label}"[:200], "ambient", "completed", stdout.strip()[:300])
-            mc_update_task(mc_task_id, "done", result_preview=stdout.strip()[:500])
+            log_to_ledger(brain, f"[ambient] {label}"[:200], "ambient", "completed", result_text.strip()[:300])
+            mc_update_task(mc_task_id, "done", result_preview=result_text.strip()[:500])
             mc_update_agent(brain, "idle", f"Ambient done: {label[:60]}")
             ambient_brain_name = BRAIN_AGENT_MAP.get(brain, BRAIN_AGENT_MAP["main"])["name"]
-            mc_post_message(ambient_brain_name, "josh", f"[Ambient: {label}] {stdout.strip()[:1500]}",
-                            message_type="text", metadata={"source": "ambient", "category": category})
+            mc_post_message(ambient_brain_name, "josh", f"[Ambient: {label}] {result_text.strip()[:1500]}",
+                            message_type="text", metadata={"source": "ambient", "category": category,
+                                                            "iterations": iterations})
 
             # Notify user with a brief summary (don't spam — keep it short)
-            preview = stdout.strip()[:300]
+            preview = result_text.strip()[:300]
+            iter_note = f" (took {iterations} attempt{'s' if iterations > 1 else ''})" if iterations > 1 else ""
             await context.bot.send_message(
                 chat_id=AUTHORIZED_CHAT_ID,
-                text=f"🔄 <b>Ambient [{category}]:</b> {label}\n\n{preview[:200]}...\n\n"
+                text=f"🔄 <b>Ambient [{category}]:</b> {label}{iter_note}\n\n{preview[:200]}...\n\n"
                      f"<i>Full result saved. Use /ambient results to see all.</i>",
                 parse_mode="HTML",
             )
         else:
-            err = stderr.strip()[:200] if stderr else "(no output)"
-            logger.warning("Ambient task failed: %s — %s", label, err)
-            mc_update_task(mc_task_id, "failed", outcome=err)
+            logger.warning("Ambient task failed after %d iterations: %s", iterations, label)
+            mc_update_task(mc_task_id, "failed", outcome=result_text[:300] if result_text else "all attempts failed")
             mc_update_agent(brain, "idle", f"Ambient failed: {label[:60]}")
 
-    except asyncio.TimeoutError:
-        logger.warning("Ambient task timed out: %s", label)
-        mc_update_task(mc_task_id, "failed", outcome="timeout")
-        mc_update_agent(brain, "idle", f"Ambient timeout: {label[:60]}")
     except Exception as e:
         logger.error("Ambient error: %s — %s", label, e)
         mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
@@ -3369,6 +3769,132 @@ async def run_ambient_loop(context: ContextTypes.DEFAULT_TYPE):
         # Keep only last 50 history entries
         state["history"] = state["history"][-50:]
         _save_ambient_state(state)
+
+
+# --- /loop command: Explicit exec loop with retries ---
+@authorized
+async def cmd_loop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run a task with plan→execute→test→reflect cycle.
+    Usage: /loop <brain> <task> — run with up to 3 retries and learning
+           /loop status — show circuit breaker status
+           /loop memory — show what the system has learned"""
+    args = " ".join(context.args).strip() if context.args else ""
+
+    if not args or args == "help":
+        await reply_html(update,
+            "<b>🔄 Execution Loop</b>\n\n"
+            "<code>/loop left analyze the API for bottlenecks</code>\n"
+            "<code>/loop right design a landing page concept</code>\n"
+            "<code>/loop status</code> — circuit breaker state\n"
+            "<code>/loop memory</code> — learned error patterns\n\n"
+            "Automatically retries failed tasks with reflection.\n"
+            "Circuit breaker stops infinite loops after 3 consecutive failures."
+        )
+        return
+
+    if args == "status":
+        lines = ["<b>⚡ Circuit Breaker Status:</b>"]
+        for brain in ("left", "right"):
+            is_open, reason = check_circuit_breaker(brain)
+            state = _circuit_breaker.get(brain, {"failures": 0})
+            status = "🔴 OPEN" if is_open else "🟢 CLOSED"
+            lines.append(f"  {brain}: {status} ({state['failures']} consecutive failures)")
+            if reason:
+                lines.append(f"    → {reason}")
+        await reply_html(update, "\n".join(lines))
+        return
+
+    if args == "memory":
+        try:
+            conn = sqlite3.connect(str(EXEC_MEMORY_DB))
+            # Show recent patterns
+            patterns = conn.execute(
+                "SELECT error_signature, frequency, last_solution, last_brain "
+                "FROM exec_patterns ORDER BY frequency DESC LIMIT 10"
+            ).fetchall()
+            # Show recent exec history
+            recent = conn.execute(
+                "SELECT brain, status, error_pattern, attempt, duration_secs, timestamp "
+                "FROM exec_memory ORDER BY timestamp DESC LIMIT 10"
+            ).fetchall()
+            conn.close()
+
+            lines = ["<b>🧠 Execution Loop Memory:</b>"]
+            if patterns:
+                lines.append("\n<b>Top Error Patterns:</b>")
+                for sig, freq, sol, br in patterns:
+                    sol_text = f" → {sol[:60]}" if sol else ""
+                    lines.append(f"  • <code>{sig}</code> ({freq}x, {br}){sol_text}")
+            else:
+                lines.append("\nNo error patterns recorded yet.")
+
+            if recent:
+                lines.append("\n<b>Recent Executions:</b>")
+                for br, st, err, att, dur, ts in recent:
+                    dur_str = f"{dur:.0f}s" if dur else "?"
+                    emoji = "✅" if st == "success" else "❌"
+                    ts_short = ts[11:16] if len(ts) > 16 else ts
+                    lines.append(f"  {emoji} {br} ({st}, attempt {att}, {dur_str}) [{ts_short}]")
+            await reply_html(update, "\n".join(lines))
+        except Exception as e:
+            await reply_html(update, f"❌ Memory read error: {e}")
+        return
+
+    # Parse brain and task
+    parts = args.split(None, 1)
+    brain = parts[0].lower()
+    if brain not in ("left", "right"):
+        brain = "left"
+        task_text = args
+    else:
+        task_text = parts[1] if len(parts) > 1 else ""
+
+    if not task_text:
+        await update.message.reply_text("Please provide a task. Example: /loop left analyze the API")
+        return
+
+    await send_typing(update)
+    await reply_html(update, f"🔄 <b>Starting exec loop:</b> {html_escape(task_text[:100])}\n"
+                              f"Brain: {brain} | Max iterations: 3 | Circuit breaker: active")
+
+    global _direct_tasks_active
+    _direct_tasks_active += 1
+    mc_update_agent(brain, "busy", f"Loop: {task_text[:80]}")
+    mc_task_id = mc_create_task(brain, task_text[:200], priority="medium")
+
+    try:
+        success, result, iterations, loop_id = await exec_loop(brain, task_text, max_iterations=3, update=update)
+
+        if success:
+            result_display = truncate(result, 3000)
+            log_to_ledger(brain, task_text[:200], "loop", "completed", result[:300])
+            mc_update_task(mc_task_id, "done", result_preview=result[:500])
+            mc_update_agent(brain, "idle", f"Loop done: {task_text[:60]}")
+
+            review = await review_result(brain, task_text, result)
+            if review:
+                await reply_html(update, f"<b>📝 Review:</b>\n{html_escape(review)}")
+            await reply_html(update,
+                f"✅ <b>Loop completed</b> (iteration {iterations}/3)\n\n"
+                f"{html_escape(result_display)}",
+                reply_markup=build_quick_actions_keyboard(),
+            )
+        else:
+            log_to_ledger(brain, task_text[:200], "loop", "failed", result[:300] if result else "")
+            mc_update_task(mc_task_id, "failed", outcome=result[:300] if result else "exhausted")
+            mc_update_agent(brain, "idle", f"Loop failed: {task_text[:60]}")
+            await reply_html(update,
+                f"❌ <b>Loop exhausted after {iterations} iterations</b>\n\n"
+                f"{html_escape(result[:1000] if result else '(no output)')}\n\n"
+                f"<i>Error pattern stored for future avoidance. "
+                f"Use /loop memory to see learned patterns.</i>"
+            )
+    except Exception as e:
+        mc_update_task(mc_task_id, "failed", outcome=str(e)[:300])
+        mc_update_agent(brain, "idle", f"Loop error: {task_text[:60]}")
+        await reply_html(update, f"❌ <b>Loop error:</b> {html_escape(str(e))}")
+    finally:
+        _direct_tasks_active = max(0, _direct_tasks_active - 1)
 
 
 # --- /web command: Web research & automation dispatch ---
@@ -3746,6 +4272,7 @@ def main():
     app.add_handler(CommandHandler("ambient", cmd_ambient))
     app.add_handler(CommandHandler("web", cmd_web))
     app.add_handler(CommandHandler("agents", cmd_agents))
+    app.add_handler(CommandHandler("loop", cmd_loop))
 
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
