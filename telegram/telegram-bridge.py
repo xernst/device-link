@@ -15,11 +15,13 @@ from datetime import datetime, time
 from functools import wraps
 from collections import deque
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
@@ -205,7 +207,65 @@ CUSTOM_SKILLS = load_custom_skills()
 
 
 # --- In-memory conversation buffer ---
-conversation_history = deque(maxlen=20)
+conversation_history = deque(maxlen=50)
+
+
+def restore_conversation_history():
+    """On startup, reload last session context from memory flush + recent DB messages."""
+    restored = 0
+
+    # 1. Try the memory flush snapshot first (has conversation flow)
+    flush_file = MEMORY_DIR / "last-session-context.md"
+    if flush_file.exists():
+        try:
+            text = flush_file.read_text()
+            # Skip YAML frontmatter
+            if text.startswith("---"):
+                end = text.find("---", 3)
+                if end > 0:
+                    text = text[end + 3:].strip()
+            # Skip the markdown header
+            if text.startswith("# Session Context Snapshot"):
+                text = text[len("# Session Context Snapshot"):].strip()
+            # Parse "role: message" lines
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("user: "):
+                    conversation_history.append(("user", line[6:]))
+                    restored += 1
+                elif line.startswith("assistant: "):
+                    conversation_history.append(("assistant", line[11:]))
+                    restored += 1
+                elif line.startswith("[Fetched Content]: "):
+                    conversation_history.append(("system", line[19:]))
+                    restored += 1
+        except Exception as e:
+            logger.error("Failed to restore from flush file: %s", e)
+
+    # 2. Also pull recent messages from SQLite (catches anything after last flush)
+    try:
+        recent = get_recent_memory(limit=15)
+        for role, content, ts in recent:
+            # Don't duplicate entries already restored from flush
+            entry = (role, content[:500])
+            already = False
+            for existing_role, existing_msg in conversation_history:
+                if existing_role == role and content[:100] in existing_msg:
+                    already = True
+                    break
+            if not already:
+                conversation_history.append((role, content[:500]))
+                restored += 1
+    except Exception:
+        pass
+
+    if restored:
+        logger.info("Restored %d messages into conversation history from previous session", restored)
+
+
+restore_conversation_history()
 
 # --- System context ---
 SYSTEM_CONTEXT = """You are Josh's AI assistant running on his Device Link swarm — a multi-machine system with 3 Mac laptops connected via Tailscale. You are talking to Josh through Telegram.
@@ -237,10 +297,14 @@ You are the central brain of Device Link, a personal AI command center. You're s
 - Reference Josh's actual setup when relevant
 - If a task needs the brains, say so and route it
 - If you can answer it yourself, just answer it — don't overthink routing
-- Remember what Josh said earlier in the conversation
+- Remember what Josh said earlier in the conversation — USE THE CONVERSATION HISTORY
 - NEVER say "I can't search the internet" — you CAN search. Just do it.
+- NEVER say "I can't access" a URL or tweet — the system handles URL fetching for you
+- If Josh references "the tweet", "that link", "the article", etc — look in conversation history for the URL and its content
 - If Josh asks you to find, search, look up, or compare anything online — search for it
 - Be proactive — if a question would benefit from a web search, do the search
+- When Josh asks you to CREATE, WRITE, BUILD, or DRAFT something — DO IT. Produce the actual content (survey, document, email, plan, etc.) directly in your response. Don't ask clarifying questions unless truly necessary. Just make it and let Josh iterate.
+- You have FULL CONTEXT of everything Josh has said in this session. Use it.
 
 ## Recent Results Summary
 {recent_results}
@@ -353,11 +417,19 @@ def build_prompt_with_history(user_message):
     """Build prompt with conversation history, persistent memory, and system context."""
     system = build_system_context()
 
-    # In-memory recent conversation (fast)
+    # In-memory recent conversation (fast) — send last 20 entries with generous truncation
     history_lines = []
     for role, msg in conversation_history:
-        prefix = "Josh" if role == "user" else "Assistant"
-        truncated = msg[:300] + "..." if len(msg) > 300 else msg
+        if role == "system":
+            # Include fetched content but keep it concise
+            prefix = "[Fetched Content]"
+            truncated = msg[:800] + "..." if len(msg) > 800 else msg
+        elif role == "user":
+            prefix = "Josh"
+            truncated = msg[:500] + "..." if len(msg) > 500 else msg
+        else:
+            prefix = "Assistant"
+            truncated = msg[:500] + "..." if len(msg) > 500 else msg
         history_lines.append(f"{prefix}: {truncated}")
 
     # Search persistent memory for relevant past context
@@ -397,7 +469,7 @@ def build_prompt_with_history(user_message):
     if mail_context:
         parts.append(mail_context)
     if history_lines:
-        parts.append("\n## Recent Conversation\n" + "\n".join(history_lines[-10:]))
+        parts.append("\n## Recent Conversation\n" + "\n".join(history_lines[-20:]))
     parts.append(f"\n## Current Message from Josh\n{user_message}")
     parts.append("\nRespond directly and helpfully. Be concise for simple questions, detailed for complex ones.")
     return "\n".join(parts)
@@ -415,28 +487,42 @@ def authorized(func):
 
 
 # --- LLM ---
-async def ask_llm(prompt, timeout=90):
-    """Ask OpenClaw agent with full context."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "openclaw", "agent", "--agent", "main",
-            "--message", prompt, "--timeout", str(timeout), "--json",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
-        raw = stdout.decode().strip()
-        if not raw:
-            return "(No response)"
+async def ask_llm(prompt, timeout=90, retries=1):
+    """Ask OpenClaw agent with full context. Retries once on failure."""
+    last_error = None
+    for attempt in range(retries + 1):
         try:
-            data = json.loads(raw)
-            text = data.get("result", {}).get("payloads", [{}])[0].get("text", "")
-            return text if text else data.get("summary", "(empty)")
-        except (json.JSONDecodeError, IndexError, KeyError):
-            return raw[:3000]
-    except asyncio.TimeoutError:
-        return "(Timed out — try a shorter question or dispatch to a brain)"
-    except Exception as e:
-        return "(Error: " + str(e) + ")"
+            proc = await asyncio.create_subprocess_exec(
+                "openclaw", "agent", "--agent", "main",
+                "--message", prompt, "--timeout", str(timeout), "--json",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
+            raw = stdout.decode().strip()
+            if not raw:
+                if attempt < retries:
+                    await asyncio.sleep(2)
+                    continue
+                return "(No response)"
+            try:
+                data = json.loads(raw)
+                text = data.get("result", {}).get("payloads", [{}])[0].get("text", "")
+                return text if text else data.get("summary", "(empty)")
+            except (json.JSONDecodeError, IndexError, KeyError):
+                return raw[:3000]
+        except asyncio.TimeoutError:
+            last_error = "Timed out"
+            if attempt < retries:
+                await asyncio.sleep(2)
+                continue
+            return "(Timed out — try a shorter question or dispatch to a brain)"
+        except Exception as e:
+            last_error = str(e)
+            if attempt < retries:
+                await asyncio.sleep(2)
+                continue
+            return f"(Error: {e})"
+    return f"(Failed after {retries + 1} attempts: {last_error})"
 
 
 # --- Task Ledger ---
@@ -600,10 +686,318 @@ def _log_task_error(task):
         logger.error("async task failed: %s", exc)
 
 
+def html_escape(text):
+    """Escape HTML special characters for Telegram HTML parse mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def send_typing(update):
+    """Send typing indicator to show the bot is working."""
+    try:
+        await update.effective_chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+
+
+async def reply_html(update_or_msg, text, **kwargs):
+    """Send a message with HTML parse mode, falling back to plain text on error."""
+    msg = update_or_msg.message if hasattr(update_or_msg, 'message') else update_or_msg
+    try:
+        return await msg.reply_text(text, parse_mode=ParseMode.HTML, **kwargs)
+    except Exception:
+        # Strip HTML tags and send plain
+        import re as _re
+        plain = _re.sub(r'<[^>]+>', '', text)
+        return await msg.reply_text(plain, **kwargs)
+
+
+async def edit_or_reply(msg, text, **kwargs):
+    """Edit an existing message or send a new one if edit fails."""
+    try:
+        return await msg.edit_text(text, parse_mode=ParseMode.HTML, **kwargs)
+    except Exception:
+        try:
+            return await msg.edit_text(text, **kwargs)
+        except Exception:
+            return msg
+
+
+def build_quick_actions_keyboard(include_search=False):
+    """Build inline keyboard with contextual quick actions."""
+    buttons = [
+        [
+            InlineKeyboardButton("📊 Status", callback_data="action_status"),
+            InlineKeyboardButton("📋 Brief", callback_data="action_brief"),
+            InlineKeyboardButton("📁 Results", callback_data="action_results"),
+        ],
+    ]
+    if include_search:
+        buttons.append([
+            InlineKeyboardButton("🔍 Search more", callback_data="action_search_more"),
+        ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def build_dispatch_keyboard(task_preview):
+    """Build keyboard for dispatching a task to brains."""
+    task_short = task_preview[:60]
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🧠 Left Brain", callback_data=f"dispatch_left"),
+            InlineKeyboardButton("🎨 Right Brain", callback_data=f"dispatch_right"),
+        ],
+        [
+            InlineKeyboardButton("🤝 Both Brains", callback_data=f"dispatch_collab"),
+        ],
+    ])
+
+
 def get_recent_results(count=5):
     if not RESULTS_DIR.exists():
         return []
     return sorted(RESULTS_DIR.glob("*.md"), key=os.path.getmtime, reverse=True)[:count]
+
+
+# --- URL Detection & Fetching ---
+URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+', re.IGNORECASE)
+
+
+def extract_urls(text):
+    """Extract all URLs from a message."""
+    return URL_PATTERN.findall(text)
+
+
+def is_twitter_url(url):
+    """Check if a URL is from Twitter/X."""
+    return bool(re.match(r'https?://(www\.)?(twitter\.com|x\.com)/', url))
+
+
+def get_tweet_id(url):
+    """Extract tweet/status ID from a Twitter/X URL."""
+    m = re.search(r'/status/(\d+)', url)
+    return m.group(1) if m else None
+
+
+async def fetch_tweet(url, max_chars=8000):
+    """Fetch tweet content using fxtwitter.com API. Returns (text, title) or (None, error)."""
+    import aiohttp
+    tweet_id = get_tweet_id(url)
+    if not tweet_id:
+        return None, "Could not extract tweet ID"
+
+    # Try fxtwitter API (returns JSON with tweet content)
+    # Extract user from URL
+    m = re.search(r'(?:twitter\.com|x\.com)/([^/]+)/status/', url)
+    user = m.group(1) if m else "i"
+    fx_url = f"https://api.fxtwitter.com/{user}/status/{tweet_id}"
+
+    headers = {"User-Agent": "Device-Link Bot/1.0"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(fx_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    tweet = data.get("tweet", {})
+                    author_name = tweet.get("author", {}).get("name", user)
+                    author_handle = tweet.get("author", {}).get("screen_name", user)
+                    text = tweet.get("text", "")
+                    created = tweet.get("created_at", "")
+                    likes = tweet.get("likes", 0)
+                    retweets = tweet.get("retweets", 0)
+                    replies = tweet.get("replies", 0)
+                    # Handle Twitter articles (long-form content in blocks)
+                    article = tweet.get("article", {})
+                    article_text = ""
+                    if article:
+                        article_title = article.get("title", "")
+                        content_obj = article.get("content", {})
+                        blocks = content_obj.get("blocks", []) if isinstance(content_obj, dict) else []
+                        if blocks:
+                            alines = []
+                            if article_title:
+                                alines.append(f"# {article_title}\n")
+                            for b in blocks:
+                                btype = b.get("type", "")
+                                btext = b.get("text", "")
+                                if btype.startswith("header"):
+                                    alines.append(f"\n## {btext}")
+                                elif btype == "unordered-list-item":
+                                    alines.append(f"- {btext}")
+                                elif btype == "ordered-list-item":
+                                    alines.append(f"• {btext}")
+                                elif btype == "blockquote":
+                                    alines.append(f"> {btext}")
+                                else:
+                                    alines.append(btext)
+                            article_text = "\n".join(alines)
+
+                    # Check for quote tweet
+                    quote = tweet.get("quote", {})
+                    quote_text = ""
+                    if quote:
+                        qt_author = quote.get("author", {}).get("name", "?")
+                        qt_text = quote.get("text", "")
+                        quote_text = f"\n\n[Quote tweet from {qt_author}]: {qt_text}"
+                    # Check for media
+                    media = tweet.get("media", {})
+                    media_text = ""
+                    if media and media.get("all"):
+                        for m_item in media["all"][:3]:
+                            m_type = m_item.get("type", "")
+                            if m_type == "photo":
+                                media_text += "\n[📷 Photo attached]"
+                            elif m_type == "video":
+                                media_text += "\n[🎬 Video attached]"
+                    # Build output — prefer article content over tweet text
+                    main_content = article_text if article_text else text
+                    content = (
+                        f"@{author_handle} ({author_name}):\n\n"
+                        f"{main_content}"
+                        f"{quote_text}"
+                        f"{media_text}\n\n"
+                        f"❤️ {likes:,} | 🔄 {retweets:,} | 💬 {replies:,}\n"
+                        f"Posted: {created}"
+                    )
+                    title = f"{'Article' if article_text else 'Tweet'} by @{author_handle}"
+                    return content[:max_chars], title
+                else:
+                    return None, f"fxtwitter returned HTTP {resp.status}"
+    except asyncio.TimeoutError:
+        return None, "Timeout fetching tweet"
+    except Exception as e:
+        return None, f"Tweet fetch error: {str(e)[:100]}"
+
+
+async def fetch_url(url, max_chars=8000):
+    """Fetch a URL and extract readable text. Returns (text, title) or (None, error)."""
+    import aiohttp
+    from bs4 import BeautifulSoup
+
+    # Special handling for Twitter/X
+    if is_twitter_url(url):
+        return await fetch_tweet(url, max_chars)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return None, f"HTTP {resp.status}"
+                content_type = resp.headers.get("Content-Type", "")
+                if "text/html" not in content_type and "application/json" not in content_type:
+                    return None, f"Non-HTML content: {content_type[:50]}"
+                html = await resp.text(errors="replace")
+    except asyncio.TimeoutError:
+        return None, "Timeout fetching URL"
+    except Exception as e:
+        return None, str(e)[:200]
+
+    # Parse HTML
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Remove script, style, nav, footer, header noise
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "iframe", "noscript"]):
+            tag.decompose()
+
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+
+        # Try article/main content first
+        main = soup.find("article") or soup.find("main") or soup.find(role="main")
+        if main:
+            text = main.get_text(separator="\n", strip=True)
+        else:
+            # Fall back to body
+            body = soup.find("body")
+            text = body.get_text(separator="\n", strip=True) if body else soup.get_text(separator="\n", strip=True)
+
+        # Clean up: collapse whitespace, remove blank lines
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        text = "\n".join(lines)
+
+        # Truncate
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...(truncated)"
+
+        if len(text) < 50:
+            return None, "Page had no readable content"
+
+        return text, title
+
+    except Exception as e:
+        return None, f"Parse error: {str(e)[:100]}"
+
+
+async def fetch_and_analyze_url(url, user_message, update):
+    """Fetch a URL, extract content, and have LLM analyze it with conversation context."""
+    await send_typing(update)
+    placeholder = await reply_html(update, f"🔗 <b>Fetching:</b> <code>{html_escape(url[:80])}</code>...")
+
+    content, title_or_error = await fetch_url(url)
+
+    if content is None:
+        # Fetch failed — fall back to web search about the URL
+        logger.info("URL fetch failed (%s), falling back to search: %s", title_or_error, url[:80])
+        await edit_or_reply(placeholder, f"⚠️ Couldn't fetch page ({title_or_error}). Searching for context...")
+        # Search for the URL or related content
+        t = asyncio.create_task(search_and_summarize(url, update, raw_query=True))
+        t.add_done_callback(_log_task_error)
+        return
+
+    # Store the raw fetched content in conversation history so the bot can reference it later
+    content_entry = f"[FETCHED URL: {url}]\nTitle: {title_or_error}\nContent:\n{content[:2000]}"
+    conversation_history.append(("system", content_entry))
+    save_message("system", content_entry, route="url_content")
+
+    await edit_or_reply(placeholder, f"📄 <b>{html_escape(title_or_error[:80])}</b>\n\nAnalyzing content...")
+    await send_typing(update)
+
+    # Build context from conversation
+    recent = []
+    for role, msg in list(conversation_history)[-10:]:
+        if role == "system":
+            continue  # Don't include raw content dumps in the summary
+        recent.append(f"{role}: {msg[:300]}")
+    conv_context = "\n".join(recent) if recent else ""
+
+    # Strip the URL from user message to get any additional instructions
+    user_text_without_url = user_message.replace(url, "").strip()
+    instruction = user_text_without_url if len(user_text_without_url) > 3 else "Summarize the key points and explain how this is relevant."
+
+    analysis_prompt = (
+        f"Josh shared a URL: {url}\n"
+        f"Page title: {title_or_error}\n\n"
+    )
+    if conv_context:
+        analysis_prompt += f"Recent conversation context:\n{conv_context}\n\n"
+    if user_text_without_url and len(user_text_without_url) > 3:
+        analysis_prompt += f"Josh's note about this link: {user_text_without_url[:500]}\n\n"
+    analysis_prompt += (
+        f"Page content:\n{content[:6000]}\n\n"
+        "Based on the ACTUAL page content above (which you CAN see — it was fetched for you):\n"
+        "1. Summarize the key points (3-5 bullets)\n"
+        "2. Extract any specific tools, products, or techniques mentioned\n"
+        "3. Note how this relates to Josh's projects (Device Link AI swarm, AI recruiting screener)\n"
+        "4. Flag any actionable ideas or things worth trying\n"
+        "Be direct and specific — reference actual content from the page. Do NOT say you cannot access the content."
+    )
+
+    response = await ask_llm(analysis_prompt, timeout=60, retries=1)
+
+    if response and not response.startswith("("):
+        # Store a richer summary so follow-up questions can reference it
+        conversation_history.append(("assistant", f"[Analysis of {url}]\n{response[:500]}"))
+        save_message("assistant", f"[url: {url}]\n{response}", route="url")
+        await reply_html(
+            update, truncate(response, 4000),
+            reply_markup=build_quick_actions_keyboard(include_search=True),
+        )
+    else:
+        await update.message.reply_text(f"Couldn't analyze the page. Response: {response[:200]}")
 
 
 # --- Web search ---
@@ -651,30 +1045,33 @@ async def extract_search_query(user_message):
     )
     try:
         raw = await ask_llm(prompt, timeout=20)
-        # Clean up — take the first query line
+        # Clean up — get all query lines
         lines = [l.strip().strip('"').strip("'").lstrip("0123456789.-) ")
                  for l in raw.strip().split("\n") if l.strip()]
         # Filter out meta-text
         queries = [l for l in lines if len(l) > 5 and not l.lower().startswith(("search quer", "here", "note:"))]
-        return queries[0] if queries else user_message
+        return queries[:3] if queries else [user_message]
     except Exception:
-        return user_message
+        return [user_message]
 
 
 async def search_and_summarize(query, update, raw_query=False):
     """Search the web, then summarize results with LLM. Uses multi-query when needed."""
+    await send_typing(update)
+
     # Extract proper search queries unless already refined
     if not raw_query:
-        refined = await extract_search_query(query)
-        # extract_search_query returns a string (first query)
-        queries = [refined]
+        queries = await extract_search_query(query)
     else:
         queries = [query]
 
-    # Run searches
+    # Run searches across all queries
     all_results = []
+    search_status = []
     for q in queries[:3]:  # max 3 queries
-        await update.message.reply_text(f"🔍 {q}")
+        search_status.append(q)
+        await reply_html(update, f"🔍 <code>{html_escape(q)}</code>")
+        await send_typing(update)
         results = await web_search(q, max_results=5)
         all_results.extend(results)
 
@@ -703,9 +1100,12 @@ async def search_and_summarize(query, update, raw_query=False):
 
     # Build context from conversation
     recent = []
-    for role, msg in list(conversation_history)[-4:]:
-        recent.append(f"{role}: {msg[:150]}")
+    for role, msg in list(conversation_history)[-8:]:
+        if role != "system":
+            recent.append(f"{role}: {msg[:300]}")
     conv_context = "\n".join(recent) if recent else ""
+
+    await send_typing(update)
 
     # Have LLM analyze and summarize results with full context
     summary_prompt = (
@@ -725,9 +1125,12 @@ async def search_and_summarize(query, update, raw_query=False):
         "- How this relates to his project\n"
         "- Be direct and opinionated — tell him what's worth looking at"
     )
-    summary = await ask_llm(summary_prompt, timeout=60)
+    summary = await ask_llm(summary_prompt, timeout=60, retries=1)
     if summary and not summary.startswith("("):
-        await update.message.reply_text(truncate(summary, 4000))
+        await reply_html(
+            update, truncate(summary, 4000),
+            reply_markup=build_quick_actions_keyboard(include_search=True),
+        )
         search_entry = f"[search: {', '.join(queries)}]\n{summary}"
         conversation_history.append(("assistant", search_entry))
         save_message("assistant", search_entry, route="search")
@@ -770,6 +1173,11 @@ def classify(text):
     if lower.startswith("project:"):
         return "project", text[8:].strip()
 
+    # URL detection — fetch and analyze linked content
+    urls = extract_urls(text)
+    if urls:
+        return "url", text
+
     # Search keywords — detect web search intent
     for kw in SEARCH_KEYWORDS:
         if kw in lower:
@@ -788,48 +1196,56 @@ def classify(text):
         return "collab", text
 
     # Default: answer locally with full context
+    # (includes generative/action requests like "create a survey", "write an email", etc.)
     return "local", text
+
+
+# Action-oriented keywords — when present, the LLM should PRODUCE content, not discuss it
+ACTION_KEYWORDS = [
+    "create", "write", "draft", "build", "make", "generate",
+    "compose", "prepare", "put together", "come up with",
+]
 
 
 # --- Command handlers ---
 @authorized
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Running deep health check...")
+    await send_typing(update)
     left_h, right_h = await asyncio.gather(
         deep_health_check(LEFT_HOST, "left"),
         deep_health_check(RIGHT_HOST, "right"),
     )
 
-    def format_health(name, h):
+    def format_health(name, emoji, h):
         if h["ssh"] == "offline":
-            return f"{name}: OFFLINE"
-        components = []
+            return f"{emoji} <b>{name}</b>: 🔴 OFFLINE"
+        icons = []
         for key in ("ssh", "tmux", "ollama", "claude"):
-            icon = "+" if h[key] == "ok" else "-"
-            components.append(f"{icon}{key}")
-        return f"{name}: {' '.join(components)} | disk: {h['disk']}"
+            icon = "✅" if h[key] == "ok" else "❌"
+            icons.append(f"{icon}{key}")
+        return f"{emoji} <b>{name}</b>: {' '.join(icons)} | 💾{h['disk']}"
 
     recent = get_recent_results(5)
     lines = [
-        "Swarm Status",
-        "=" * 20,
-        format_health("Left brain ", left_h),
-        format_health("Right brain", right_h),
+        "<b>📡 Swarm Status</b>",
         "",
-        "Recent results (" + str(len(recent)) + "):",
+        format_health("Left Brain", "🧠", left_h),
+        format_health("Right Brain", "🎨", right_h),
+        "",
+        f"<b>📁 Recent Results ({len(recent)}):</b>",
     ]
     for f in recent:
         mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%H:%M")
-        lines.append("  " + f.stem + " (" + mtime + ")")
+        lines.append(f"  • {html_escape(f.stem)} ({mtime})")
     if not recent:
         lines.append("  (none)")
-    await update.message.reply_text("\n".join(lines))
+    await reply_html(update, "\n".join(lines))
 
 
 @authorized
 async def cmd_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the full rich daily brief on demand."""
-    await update.message.reply_text("Building brief...")
+    await send_typing(update)
     try:
         chunks = await build_daily_brief()
         for chunk in chunks:
@@ -851,47 +1267,35 @@ async def cmd_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Device Link\n"
-        + "=" * 20 + "\n\n"
-        + "Just talk to me. I know your setup.\n\n"
-        + "Short questions -> I answer directly\n"
-        + "Code tasks -> left brain (analytical)\n"
-        + "Design tasks -> right brain (creative)\n"
-        + "Big projects -> both brains collaborate\n\n"
-        + "Prefixes:\n"
-        + "  left: <task>    - analytical work\n"
-        + "  right: <task>   - creative work\n"
-        + "  both: <task>    - iterative collaboration\n"
-        + "  project: <desc> - auto-split across brains\n\n"
-        + "Core:\n"
-        + "  /status /brief /results /help\n\n"
-        + "Left Brain Skills:\n"
-        + "  /codereview /tdd /buildfix /verify\n"
-        + "  /testcoverage /refactorclean /e2e /securityaudit\n\n"
-        + "Right Brain Skills:\n"
-        + "  /plan /research /prd /architect\n\n"
-        + "Second Brain:\n"
-        + "  /inbox    - triage inbox items\n"
-        + "  /note     - quick capture to inbox\n"
-        + "  /journal  - journal entry\n"
-        + "  /digest   - generate task digest\n"
-        + "  /connections - find Galaxy links\n\n"
-        + "Web:\n"
-        + "  /search <query> - search the web\n"
-        + "  (or just say 'search for...')\n\n"
-        + "Memory:\n"
-        + "  /remember <query> - search past conversations\n\n"
-        + "Mailbox:\n"
-        + "  /mail - read messages from brains\n"
-        + "  /mail left <msg> - send to left brain\n\n"
-        + "Custom Skills:\n"
-        + "  /skills - list custom skills\n"
-        + "  /newskill - create a reusable skill\n\n"
-        + "All commands take an argument:\n"
-        + "  /plan build user auth system\n"
-        + "  /search voice AI recruiting APIs\n"
-        + "  /remember that recruiting project"
+    await reply_html(update,
+        "<b>🔗 Device Link</b>\n\n"
+        "Just talk to me. I know your setup.\n\n"
+        "<b>Routing:</b>\n"
+        "• Short questions → I answer directly\n"
+        "• Code tasks → 🧠 left brain\n"
+        "• Design tasks → 🎨 right brain\n"
+        "• Big projects → 🤝 both brains\n\n"
+        "<b>Prefixes:</b>\n"
+        "<code>left: &lt;task&gt;</code> — analytical work\n"
+        "<code>right: &lt;task&gt;</code> — creative work\n"
+        "<code>both: &lt;task&gt;</code> — collaboration\n"
+        "<code>project: &lt;desc&gt;</code> — auto-split\n\n"
+        "<b>Core:</b> /status /brief /results /help\n\n"
+        "<b>🧠 Left Brain:</b>\n"
+        "/codereview /tdd /buildfix /verify\n"
+        "/testcoverage /refactorclean /e2e /securityaudit\n\n"
+        "<b>🎨 Right Brain:</b>\n"
+        "/plan /research /prd /architect\n\n"
+        "<b>📓 Second Brain:</b>\n"
+        "/inbox /note /journal /digest /connections\n\n"
+        "<b>🔍 Web:</b> /search <i>or say 'search for...'</i>\n"
+        "<b>📡 Trends:</b> /trends <i>topic</i> — last 30 days across platforms\n"
+        "<b>💡 Suggest:</b> /suggest — let the bot suggest what to work on\n"
+        "<b>🌙 Overnight:</b> /overnight <i>task</i> — queue for 2 AM\n"
+        "<b>🧠 Memory:</b> /remember <i>query</i>\n"
+        "<b>📬 Mailbox:</b> /mail • /mail left <i>msg</i>\n"
+        "<b>⚡ Skills:</b> /skills • /newskill",
+        reply_markup=build_quick_actions_keyboard(),
     )
 
 
@@ -1263,15 +1667,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Store user message in history + persistent memory
     conversation_history.append(("user", text))
     save_message("user", text, route=route)
+    _last_user_message[update.effective_chat.id] = text
+
+    if route == "url":
+        urls = extract_urls(text)
+        if urls:
+            t = asyncio.create_task(fetch_and_analyze_url(urls[0], text, update))
+            t.add_done_callback(_log_task_error)
+            return
 
     if route == "search":
+        await send_typing(update)
         t = asyncio.create_task(search_and_summarize(task, update))
         t.add_done_callback(_log_task_error)
 
     elif route == "local":
-        await update.message.reply_text("🤔")
+        await send_typing(update)
+        placeholder = await update.message.reply_text("💭 Thinking...")
         full_prompt = build_prompt_with_history(text)
-        response = await ask_llm(full_prompt, timeout=90)
+
+        # Detect action/generative requests and boost the prompt
+        lower = text.lower()
+        if any(kw in lower for kw in ACTION_KEYWORDS):
+            full_prompt += (
+                "\n\nIMPORTANT: Josh is asking you to CREATE/PRODUCE something. "
+                "DO NOT ask for clarification. DO NOT say 'I can help with that'. "
+                "Just PRODUCE the actual content right now — the full survey, document, email, "
+                "plan, or whatever is requested. Make reasonable assumptions. Josh will iterate if needed."
+            )
+
+        response = await ask_llm(full_prompt, timeout=90, retries=1)
 
         # Catch useless "I can't search/access" responses — auto-search instead
         cant_phrases = [
@@ -1279,31 +1704,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "don't have access", "can't browse", "cannot browse",
             "no internet access", "can't look up", "unable to search",
             "can't access live", "don't have the ability to search",
+            "can't pull up", "cannot pull up", "i can't visit",
+            "can't access that", "cannot access that", "can't open",
+            "i don't see the tweet", "i still don't see", "paste the text",
+            "paste the actual", "paste it here", "copy and paste",
         ]
         if any(phrase in response.lower() for phrase in cant_phrases):
-            logger.info("LLM said it can't search — auto-triggering search for: %s", text[:80])
-            t = asyncio.create_task(search_and_summarize(text, update))
-            t.add_done_callback(_log_task_error)
+            # Check if there's a URL in recent history we should try fetching
+            recent_url = None
+            for role, msg in reversed(list(conversation_history)):
+                urls = extract_urls(msg)
+                if urls:
+                    recent_url = urls[0]
+                    break
+            if recent_url:
+                logger.info("LLM said it can't access — re-fetching recent URL: %s", recent_url[:80])
+                await edit_or_reply(placeholder, f"🔗 Let me fetch that for you...")
+                t = asyncio.create_task(fetch_and_analyze_url(recent_url, text, update))
+                t.add_done_callback(_log_task_error)
+            else:
+                logger.info("LLM said it can't search — auto-triggering search for: %s", text[:80])
+                await edit_or_reply(placeholder, "🔍 Searching the web...")
+                t = asyncio.create_task(search_and_summarize(text, update))
+                t.add_done_callback(_log_task_error)
         else:
             conversation_history.append(("assistant", response))
             save_message("assistant", response, route="local")
-            await update.message.reply_text(truncate(response, 4000))
+            # Edit placeholder with the actual response
+            truncated = truncate(response, 4000)
+            await edit_or_reply(placeholder, truncated)
 
     elif route == "collab":
+        await send_typing(update)
+        await reply_html(update, f"🤝 <b>Starting collaboration:</b> {html_escape(task[:100])}...")
         t = asyncio.create_task(run_collab_pipeline(update, task, DEFAULT_ROUNDS))
         t.add_done_callback(_log_task_error)
 
     elif route == "project":
+        await send_typing(update)
         t = asyncio.create_task(run_project(update, task))
         t.add_done_callback(_log_task_error)
 
     elif route in ("left", "right"):
-        await update.message.reply_text("Sending to " + route + " brain...")
+        await send_typing(update)
+        emoji = "🧠" if route == "left" else "🎨"
+        await reply_html(update, f"{emoji} <b>Dispatching to {route} brain:</b> {html_escape(task[:80])}...")
         t = asyncio.create_task(run_and_notify(update, route, task))
         t.add_done_callback(_log_task_error)
 
 
 async def run_and_notify(update, brain, task):
+    emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
     try:
         code, stdout, stderr = await dispatch_task(brain, task)
         if code == 0:
@@ -1313,21 +1764,25 @@ async def run_and_notify(update, brain, task):
             # Review gate — send executive summary before full result
             review = await review_result(brain, task, stdout.strip())
             if review:
-                await update.message.reply_text(f"Review ({brain}):\n{review}")
+                await reply_html(update, f"<b>📝 Review ({brain}):</b>\n{html_escape(review)}")
             brain_entry = f"[{brain} brain]: {result[:200]}"
             conversation_history.append(("assistant", brain_entry))
             save_message("assistant", brain_entry, route=brain)
-            await update.message.reply_text(brain + " brain done:\n" + result)
+            await reply_html(
+                update,
+                f"{emoji} <b>{brain.capitalize()} brain done</b>\n\n{html_escape(result)}",
+                reply_markup=build_quick_actions_keyboard(),
+            )
         else:
             log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
             err = truncate(stderr.strip() or stdout.strip(), 2000)
-            await update.message.reply_text(brain + " failed (exit " + str(code) + "):\n" + err)
+            await reply_html(update, f"❌ <b>{brain} failed</b> (exit {code}):\n<pre>{html_escape(err)}</pre>")
     except asyncio.TimeoutError:
         log_to_ledger(brain, task[:200], "pipeline", "timeout")
-        await update.message.reply_text(brain + " timed out: " + task[:100])
+        await reply_html(update, f"⏰ <b>{brain} timed out:</b> {html_escape(task[:100])}")
     except Exception as e:
         log_to_ledger(brain, task[:200], "pipeline", "error", str(e))
-        await update.message.reply_text(brain + " error: " + str(e))
+        await reply_html(update, f"❌ <b>{brain} error:</b> {html_escape(str(e))}")
 
 
 async def run_collab_pipeline(update, task, rounds=2):
@@ -1549,6 +2004,92 @@ async def run_project(update, description):
     )
 
 
+# --- Inline Keyboard Callback Handler ---
+# Store last user message per chat for dispatch callbacks
+_last_user_message = {}
+
+
+@authorized
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "action_status":
+        # Simulate /status command
+        fake_update = update
+        fake_update.message = query.message
+        await cmd_status(fake_update, context)
+    elif data == "action_brief":
+        fake_update = update
+        fake_update.message = query.message
+        await cmd_brief(fake_update, context)
+    elif data == "action_results":
+        fake_update = update
+        fake_update.message = query.message
+        await cmd_results(fake_update, context)
+    elif data == "action_search_more":
+        await query.message.reply_text("What should I search for?")
+    elif data.startswith("dispatch_"):
+        brain = data.replace("dispatch_", "")
+        chat_id = update.effective_chat.id
+        last_msg = _last_user_message.get(chat_id, "")
+        if not last_msg:
+            await query.message.reply_text("No recent message to dispatch. Send a task first.")
+            return
+        if brain == "collab":
+            await query.message.reply_text(f"🤝 Starting collaboration: {last_msg[:80]}...")
+            t = asyncio.create_task(run_collab_pipeline(update, last_msg, DEFAULT_ROUNDS))
+            t.add_done_callback(_log_task_error)
+        else:
+            emoji = "🧠" if brain == "left" else "🎨"
+            await query.message.reply_text(f"{emoji} Dispatching to {brain} brain: {last_msg[:80]}...")
+            t = asyncio.create_task(run_and_notify_from_msg(query.message, brain, last_msg))
+            t.add_done_callback(_log_task_error)
+
+
+async def run_and_notify_from_msg(message, brain, task):
+    """Like run_and_notify but works with a raw message object (for callbacks)."""
+    emoji = "🧠" if brain == "left" else "🎨" if brain == "right" else "🤝"
+    try:
+        code, stdout, stderr = await dispatch_task(brain, task)
+        if code == 0:
+            result = truncate(stdout.strip(), 3000) if stdout.strip() else "(no output)"
+            log_to_ledger(brain, task[:200], "pipeline", "completed", stdout.strip()[:300])
+            review = await review_result(brain, task, stdout.strip())
+            if review:
+                await message.reply_text(f"📝 Review ({brain}):\n{review}")
+            brain_entry = f"[{brain} brain]: {result[:200]}"
+            conversation_history.append(("assistant", brain_entry))
+            save_message("assistant", brain_entry, route=brain)
+            await message.reply_text(f"{emoji} {brain.capitalize()} brain done:\n\n{result}")
+        else:
+            log_to_ledger(brain, task[:200], "pipeline", "failed", stderr.strip()[:300])
+            err = truncate(stderr.strip() or stdout.strip(), 2000)
+            await message.reply_text(f"❌ {brain} failed (exit {code}):\n{err}")
+    except asyncio.TimeoutError:
+        log_to_ledger(brain, task[:200], "pipeline", "timeout")
+        await message.reply_text(f"⏰ {brain} timed out: {task[:100]}")
+    except Exception as e:
+        log_to_ledger(brain, task[:200], "pipeline", "error", str(e))
+        await message.reply_text(f"❌ {brain} error: {e}")
+
+
+# --- Global Error Handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Log errors and notify user if possible."""
+    logger.error("Exception while handling an update: %s", context.error)
+    if update and hasattr(update, 'effective_chat') and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ Something went wrong: {str(context.error)[:200]}"
+            )
+        except Exception:
+            pass
+
+
 # --- Background ---
 async def watch_results(app):
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1565,6 +2106,275 @@ async def watch_results(app):
             seen = current
         except Exception as e:
             logger.error("Watch error: %s", e)
+
+
+# --- Reverse Prompting: /suggest ---
+@authorized
+async def cmd_suggest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Let the bot lead — reverse prompting. Suggests what to work on next."""
+    await send_typing(update)
+    placeholder = await reply_html(update, "🧠 <b>Analyzing your projects and recent work...</b>")
+
+    # Gather context: recent results, pending tasks, conversation history
+    results = get_overnight_results()
+    results_summary = ""
+    for brain in ("left", "right", "collab"):
+        for item in results.get(brain, [])[:3]:
+            results_summary += f"- [{brain}] {item['task']}: {item['preview'][:100]}\n"
+
+    pending = []
+    if LEDGER_DIR.exists():
+        for f in sorted(LEDGER_DIR.glob("*.md"), key=os.path.getmtime, reverse=True)[:10]:
+            entry = parse_ledger_entry(f)
+            if entry and entry.get("status") != "completed":
+                pending.append(f"- [{entry.get('brain', '?')}] {entry.get('task', '?')[:80]}")
+
+    recent_conv = []
+    for role, msg in list(conversation_history)[-15:]:
+        if role != "system":
+            recent_conv.append(f"{role}: {msg[:200]}")
+
+    prompt = (
+        "You are Wally, the manager agent of Josh's Device Link AI swarm. "
+        "Your job is to LEAD, not follow. Based on everything you know about Josh's "
+        "projects and recent work, suggest what he should focus on next.\n\n"
+        "Josh's active projects:\n"
+        "- AI Screening Assistant (recruiting tool for Naples/Xwell salons)\n"
+        "- Device Link (the multi-Mac AI swarm you're running on)\n\n"
+    )
+    if results_summary:
+        prompt += f"Recent completed work:\n{results_summary}\n"
+    if pending:
+        prompt += f"Pending tasks:\n" + "\n".join(pending[:5]) + "\n\n"
+    if recent_conv:
+        prompt += f"Recent conversation:\n" + "\n".join(recent_conv[-8:]) + "\n\n"
+
+    prompt += (
+        "Based on all this context, suggest 3 concrete things Josh should work on next. "
+        "For each suggestion:\n"
+        "1. What to do (specific and actionable)\n"
+        "2. Which brain to use (left/right/both)\n"
+        "3. Why now (what makes this timely)\n\n"
+        "Also flag anything that looks stuck or forgotten.\n"
+        "Be opinionated. Be specific. Don't hedge."
+    )
+
+    response = await ask_llm(prompt, timeout=60, retries=1)
+    if response and not response.startswith("("):
+        conversation_history.append(("assistant", f"[suggest]: {response[:300]}"))
+        save_message("assistant", response, route="suggest")
+        await edit_or_reply(placeholder, truncate(response, 4000))
+    else:
+        await edit_or_reply(placeholder, f"Couldn't generate suggestions: {response[:200]}")
+
+
+# --- Trends Search: /trends ---
+@authorized
+async def cmd_trends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search last 30 days across Reddit, X, YouTube for trending topics."""
+    topic = " ".join(context.args) if context.args else ""
+    if not topic:
+        await update.message.reply_text("Usage: /trends <topic>\nExample: /trends AI recruiting tools")
+        return
+
+    await send_typing(update)
+    placeholder = await reply_html(update, f"📡 <b>Scanning trends:</b> <code>{html_escape(topic[:60])}</code>")
+
+    # Multi-platform search queries
+    queries = [
+        f"{topic} site:reddit.com 2026",
+        f"{topic} site:x.com OR site:twitter.com",
+        f"{topic} site:youtube.com 2026",
+        f"{topic} latest trends 2026",
+    ]
+
+    all_results = []
+    for q in queries:
+        await send_typing(update)
+        results = await web_search(q, max_results=4)
+        all_results.extend(results)
+
+    # Deduplicate
+    seen_urls = set()
+    unique = []
+    for r in all_results:
+        url = r.get("href", "")
+        if url not in seen_urls:
+            seen_urls.add(url)
+            unique.append(r)
+
+    if not unique:
+        await edit_or_reply(placeholder, "No trending results found. Try different keywords.")
+        return
+
+    # Format for LLM
+    formatted = []
+    for i, r in enumerate(unique[:12], 1):
+        formatted.append(f"{i}. {r.get('title', '')}\n   {r.get('href', '')}\n   {r.get('body', '')}")
+    results_text = "\n\n".join(formatted)
+
+    await send_typing(update)
+    summary_prompt = (
+        f"Josh is researching trending topics: {topic}\n\n"
+        "These are search results from the LAST 30 DAYS across Reddit, X/Twitter, and YouTube.\n\n"
+        f"Results:\n{results_text[:4000]}\n\n"
+        "Analyze these results and give Josh a trends brief:\n"
+        "1. 🔥 What's hot right now (top 3 trends with specific examples)\n"
+        "2. 💡 Emerging patterns (what's gaining momentum)\n"
+        "3. 🎯 Actionable for Josh (how these trends relate to his AI recruiting screener & Device Link)\n"
+        "4. 📎 Best links to check out (top 3 URLs)\n\n"
+        "Be specific. Name names. Reference actual content from the results."
+    )
+    summary = await ask_llm(summary_prompt, timeout=60, retries=1)
+    if summary and not summary.startswith("("):
+        conversation_history.append(("assistant", f"[trends: {topic}]\n{summary[:300]}"))
+        save_message("assistant", summary, route="trends")
+        await reply_html(update, truncate(summary, 4000),
+                        reply_markup=build_quick_actions_keyboard(include_search=True))
+    else:
+        await update.message.reply_text("📋 Raw results:\n\n" + truncate(results_text, 3800))
+
+
+# --- Proactive Overnight Work: /overnight ---
+OVERNIGHT_FILE = Path.home() / ".device-link" / "overnight-queue.json"
+
+
+@authorized
+async def cmd_overnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Queue tasks for overnight autonomous execution, or see what ran."""
+    args = " ".join(context.args) if context.args else ""
+
+    if not args or args.strip().lower() == "status":
+        # Show overnight queue + last results
+        queue = []
+        if OVERNIGHT_FILE.exists():
+            try:
+                queue = json.loads(OVERNIGHT_FILE.read_text())
+            except Exception:
+                pass
+        if not queue:
+            await reply_html(update,
+                "<b>🌙 Overnight Queue</b>\n\n"
+                "No tasks queued. Add some:\n"
+                "<code>/overnight research AI voice screening competitors</code>\n"
+                "<code>/overnight draft onboarding email for new salon partners</code>\n\n"
+                "Tasks run at 2 AM and results arrive with your 8 AM brief."
+            )
+        else:
+            lines = ["<b>🌙 Overnight Queue</b>\n"]
+            for i, task in enumerate(queue, 1):
+                brain = task.get("brain", "auto")
+                desc = task.get("task", "?")[:80]
+                lines.append(f"{i}. [{brain}] {desc}")
+            lines.append(f"\nThese will run at 2 AM. Use /overnight clear to reset.")
+            await reply_html(update, "\n".join(lines))
+        return
+
+    if args.strip().lower() == "clear":
+        OVERNIGHT_FILE.write_text("[]")
+        await update.message.reply_text("🌙 Overnight queue cleared.")
+        return
+
+    # Add task to queue
+    queue = []
+    if OVERNIGHT_FILE.exists():
+        try:
+            queue = json.loads(OVERNIGHT_FILE.read_text())
+        except Exception:
+            pass
+
+    # Auto-detect brain
+    lower = args.lower()
+    if any(kw in lower for kw in LEFT_KEYWORDS):
+        brain = "left"
+    elif any(kw in lower for kw in RIGHT_KEYWORDS):
+        brain = "right"
+    else:
+        brain = "collab"
+
+    queue.append({
+        "task": args,
+        "brain": brain,
+        "queued_at": datetime.now().isoformat(),
+    })
+    OVERNIGHT_FILE.write_text(json.dumps(queue, indent=2))
+    emoji = {"left": "🧠", "right": "🎨", "collab": "🤝"}[brain]
+    await reply_html(update,
+        f"🌙 <b>Queued for overnight:</b>\n"
+        f"{emoji} [{brain}] {html_escape(args[:100])}\n\n"
+        f"Queue size: {len(queue)} task(s). Will run at 2 AM."
+    )
+
+
+async def run_overnight_tasks(context: ContextTypes.DEFAULT_TYPE):
+    """2 AM job: run all queued overnight tasks."""
+    if not OVERNIGHT_FILE.exists():
+        return
+    try:
+        queue = json.loads(OVERNIGHT_FILE.read_text())
+    except Exception:
+        return
+    if not queue:
+        return
+
+    logger.info("Running %d overnight tasks", len(queue))
+    await context.bot.send_message(
+        chat_id=AUTHORIZED_CHAT_ID,
+        text=f"🌙 Starting {len(queue)} overnight task(s)..."
+    )
+
+    for task_info in queue:
+        task_text = task_info.get("task", "")
+        brain = task_info.get("brain", "collab")
+        if not task_text:
+            continue
+        try:
+            if brain == "collab":
+                code, stdout, stderr = await dispatch_task("left", task_text)
+                if code == 0:
+                    code2, stdout2, stderr2 = await dispatch_task("right", task_text)
+            else:
+                code, stdout, stderr = await dispatch_task(brain, task_text)
+            log_to_ledger(brain, task_text[:200], "overnight", "completed" if code == 0 else "failed")
+        except Exception as e:
+            logger.error("Overnight task failed: %s — %s", task_text[:60], e)
+            log_to_ledger(brain, task_text[:200], "overnight", "error", str(e))
+
+    # Clear the queue
+    OVERNIGHT_FILE.write_text("[]")
+    logger.info("Overnight tasks complete, queue cleared")
+
+
+# --- Automatic Memory Flush ---
+async def memory_flush(context: ContextTypes.DEFAULT_TYPE):
+    """Periodic memory flush — save conversation context to persistent memory."""
+    if not conversation_history:
+        return
+    try:
+        # Build a context snapshot
+        recent = list(conversation_history)[-20:]
+        snapshot_lines = []
+        for role, msg in recent:
+            if role != "system":
+                snapshot_lines.append(f"{role}: {msg[:300]}")
+        if not snapshot_lines:
+            return
+
+        snapshot = "\n".join(snapshot_lines)
+        # Save to a file for crash recovery
+        flush_file = MEMORY_DIR / "last-session-context.md"
+        flush_file.write_text(
+            f"---\n"
+            f"flushed: {datetime.now().isoformat()}\n"
+            f"session: {SESSION_ID}\n"
+            f"messages: {len(recent)}\n"
+            f"---\n\n"
+            f"# Session Context Snapshot\n\n"
+            f"{snapshot}\n"
+        )
+        logger.info("Memory flush: saved %d messages to %s", len(recent), flush_file)
+    except Exception as e:
+        logger.error("Memory flush failed: %s", e)
 
 
 async def build_daily_brief():
@@ -1709,15 +2519,26 @@ def main():
     app.add_handler(CommandHandler("newskill", cmd_newskill))
     app.add_handler(CommandHandler("skills", cmd_skills))
 
+    # Proactive commands
+    app.add_handler(CommandHandler("suggest", cmd_suggest))
+    app.add_handler(CommandHandler("trends", cmd_trends))
+    app.add_handler(CommandHandler("overnight", cmd_overnight))
+
     # Dynamic custom skill commands
     for skill_name in CUSTOM_SKILLS:
         if skill_name not in BRAIN_SKILLS:  # don't shadow built-in skills
             app.add_handler(CommandHandler(skill_name, handle_custom_skill))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Global error handler — stops "No error handlers registered" spam
+    app.add_error_handler(error_handler)
 
     if app.job_queue:
         app.job_queue.run_daily(scheduled_brief, time=time(hour=8, minute=0))
+        app.job_queue.run_daily(run_overnight_tasks, time=time(hour=2, minute=0))
+        app.job_queue.run_repeating(memory_flush, interval=1800, first=300)  # every 30 min, first at 5 min
 
     logger.info("Device-Link bridge starting (collab mode)...")
     logger.info("Chat: %d | Rounds: %d | Left: %s | Right: %s",
