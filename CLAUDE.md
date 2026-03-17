@@ -12,6 +12,7 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - **Browser**: Pinchtab on each helper (HTTP API for browser control)
 - **Google Workspace**: gws CLI on each helper (Drive, Gmail, Calendar, Sheets, Docs via MCP)
 - **Python tools**: Creative (pptx, docx, Pillow, matplotlib) + Quant (numpy, scipy, pandas, statsmodels, sympy, duckdb)
+- **JobOps**: Self-hosted job hunting automation (scrape, AI-score, tailor resumes, track responses)
 - **Notifications**: Telegram bot with Claude review gate before delivery
 - **Second Brain**: Obsidian vault at `~/Documents/second-brain/` (task ledger + knowledge base)
 - **Dashboard**: Mission Control for monitoring
@@ -38,6 +39,7 @@ Multi-machine AI agent swarm. Two helper Macs (left brain + right brain) running
 - `config/pinchtab.sh` — install/configure Pinchtab browser control per helper
 - `config/gws.sh` — install/configure Google Workspace CLI per helper
 - `config/python-tools.sh` — install Python creative + quant tools (pptx, docx, numpy, scipy, pandas, duckdb)
+- `config/jobops.sh` — install JobOps job hunting automation (Docker-based, uses Ollama)
 - `trigger/trigger.sh` — CLI to send tasks from main Mac (with review gate)
 - `trigger/pipeline.sh` — 2-tier pipeline with bidirectional fallback
 - `trigger/digest.sh` — daily task digest generator for second brain
