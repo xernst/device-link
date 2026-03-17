@@ -55,6 +55,13 @@ fi
 echo "  Chat ID: $CHAT_ID"
 echo ""
 
+# Detect correct Python path (Homebrew > system)
+PYTHON3="$(command -v python3)"
+if [[ "$PYTHON3" == "/usr/bin/python3" ]] && [[ -x "/opt/homebrew/bin/python3" ]]; then
+    PYTHON3="/opt/homebrew/bin/python3"
+fi
+echo "  Using Python: $PYTHON3"
+
 # Install files
 mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/telegram-bridge.py" "$INSTALL_DIR/"
@@ -70,6 +77,12 @@ chmod 600 "$INSTALL_DIR/.env"
 echo "  Config saved to $INSTALL_DIR/.env"
 
 # Create LaunchAgent
+LOG_DIR="$HOME/.device-link/logs"
+mkdir -p "$LOG_DIR"
+
+# Unload old version if running
+launchctl unload "$PLIST_PATH" 2>/dev/null || true
+
 cat > "$PLIST_PATH" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -80,7 +93,7 @@ cat > "$PLIST_PATH" << EOF
     <string>com.device-link.telegram</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>${PYTHON3}</string>
         <string>${INSTALL_DIR}/telegram-bridge.py</string>
     </array>
     <key>EnvironmentVariables</key>
@@ -89,15 +102,21 @@ cat > "$PLIST_PATH" << EOF
         <string>${BOT_TOKEN}</string>
         <key>TELEGRAM_CHAT_ID</key>
         <string>${CHAT_ID}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>${HOME}</string>
     </dict>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>/tmp/device-link-telegram.log</string>
+    <string>${LOG_DIR}/telegram.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/device-link-telegram.err</string>
+    <string>${LOG_DIR}/telegram.err</string>
 </dict>
 </plist>
 EOF
