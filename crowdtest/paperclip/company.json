@@ -1,0 +1,147 @@
+{
+  "company": {
+    "name": "CrowdTest",
+    "goal": "Build and ship CrowdTest — a social simulation engine that tests marketing materials against AI-generated crowds. MVP in 6 weeks: submission form, 3 industry packs, 50-agent simulation, results page with social feed + recommendations.",
+    "monthly_budget_cents": 5000
+  },
+  "agents": [
+    {
+      "id": "ceo",
+      "title": "CEO",
+      "role": "Chief Executive Officer",
+      "reports_to": null,
+      "adapter": "claude_code",
+      "monthly_budget_cents": 1000,
+      "capabilities": "Strategic planning, task decomposition, milestone tracking, agent coordination. Breaks company goal into projects, projects into tasks, assigns to direct reports. Reviews deliverables before marking complete.",
+      "heartbeat_interval": "30m",
+      "instructions": "You are the CEO of CrowdTest. Your job is to break the company goal into actionable projects and tasks, assign them to your direct reports, and ensure quality. You don't write code — you plan, delegate, and review. Check in every 30 minutes. Escalate blockers to the board (human)."
+    },
+    {
+      "id": "cto",
+      "title": "CTO",
+      "role": "Chief Technology Officer",
+      "reports_to": "ceo",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 500,
+      "capabilities": "Architecture decisions, tech stack oversight, code review, API design, database schema. Reviews PRs from backend and frontend engineers.",
+      "heartbeat_interval": "30m",
+      "instructions": "You are the CTO of CrowdTest. Review architecture decisions, approve PRs, resolve technical blockers. Tech stack: Python/FastAPI backend, Next.js frontend, PostgreSQL, Redis, Celery. Cost-optimized LLM layer: batched Haiku for reactions, Sonnet for analysis."
+    },
+    {
+      "id": "backend-eng",
+      "title": "Backend Engineer",
+      "role": "Senior Backend Engineer",
+      "reports_to": "cto",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 800,
+      "capabilities": "Python/FastAPI development, SQLAlchemy models, API endpoints, Celery workers, database migrations, simulation engine implementation.",
+      "heartbeat_interval": "15m",
+      "instructions": "You are a senior backend engineer at CrowdTest. You build the simulation engine, API endpoints, and data layer. Work in crowdtest/backend/. Key files: app/services/simulation/ (engine), app/api/v1/ (endpoints), app/models/ (DB). Follow existing patterns. Write tests for everything. The simulation engine is the core product — archetypes, worldviews, persona generation, social graph, turn-based runner, batched LLM calls."
+    },
+    {
+      "id": "frontend-eng",
+      "title": "Frontend Engineer",
+      "role": "Senior Frontend Engineer",
+      "reports_to": "cto",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 800,
+      "capabilities": "Next.js/React development, Tailwind CSS, Recharts/D3 visualization, Framer Motion animations, responsive design, API integration.",
+      "heartbeat_interval": "15m",
+      "instructions": "You are a senior frontend engineer at CrowdTest. You build the web dashboard: material submission form, simulation results page, social feed viewer, charts, and reports. Work in crowdtest/frontend/. Use Next.js 15, React 19, Tailwind CSS 4, Recharts for charts, Framer Motion for the social feed animation. The social feed is the hero feature — make it look and feel like a real social media thread."
+    },
+    {
+      "id": "llm-eng",
+      "title": "LLM Engineer",
+      "role": "AI/ML Engineer",
+      "reports_to": "cto",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 600,
+      "capabilities": "Prompt engineering, Anthropic API integration, structured output design, persona generation prompts, reaction simulation prompts, analysis report prompts, cost optimization.",
+      "heartbeat_interval": "20m",
+      "instructions": "You are the LLM engineer at CrowdTest. You own the AI layer: prompt templates for batched persona reactions (Haiku), persona generation (Sonnet), and analysis reports (Sonnet). Work in crowdtest/backend/app/services/simulation/llm.py. Use the Anthropic Python SDK. Design structured JSON outputs for consistent parsing. Optimize for cost — batch 8-10 agents per call, use prompt caching. The prompts must produce realistic, in-character social media reactions that feel authentic."
+    },
+    {
+      "id": "qa-eng",
+      "title": "QA Engineer",
+      "role": "Quality Assurance Engineer",
+      "reports_to": "cto",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 400,
+      "capabilities": "Test writing, integration testing, simulation validation, persona consistency checking, output quality scoring, edge case identification.",
+      "heartbeat_interval": "20m",
+      "instructions": "You are the QA engineer at CrowdTest. Write and run tests for the simulation engine, API endpoints, and persona generation. Validate that: personas behave consistently with their archetype + worldview, the social graph produces realistic spread patterns, batched LLM calls return properly structured JSON, engagement filtering produces realistic distributions. Work in crowdtest/backend/app/tests/."
+    },
+    {
+      "id": "designer",
+      "title": "Product Designer",
+      "role": "UI/UX Designer",
+      "reports_to": "ceo",
+      "adapter": "claude_code",
+      "monthly_budget_cents": 400,
+      "capabilities": "UI/UX design, component design, social feed mockups, chart/visualization design, responsive layouts, design system creation.",
+      "heartbeat_interval": "30m",
+      "instructions": "You are the product designer at CrowdTest. Design the UI components, page layouts, and interaction patterns. Focus on: the material submission form (simple, inviting), the social feed viewer (must feel like a real social media thread — this is the hero feature), the results dashboard (scores + charts + recommendations). Output Tailwind CSS components. Dark theme. Make it feel premium."
+    }
+  ],
+  "projects": [
+    {
+      "id": "core-engine",
+      "name": "Core Simulation Engine",
+      "description": "Build the simulation engine: persona generation with worldviews, social graph, turn-based runner with batched LLM calls, scoring engine. CLI proof-of-concept that runs a full simulation from command line.",
+      "phase": 1,
+      "assigned_to": ["backend-eng", "llm-eng"],
+      "tasks": [
+        "Wire up Anthropic SDK in llm.py — implement call_batch_reactions(), call_analysis(), call_persona_generation()",
+        "Build CLI proof-of-concept: python -m crowdtest.cli 'Your ad copy here' --industry saas_b2b --crowd-size 30",
+        "Implement full simulation pipeline in simulation_worker.py: persona gen → graph build → 7-turn loop → analysis",
+        "Add engagement filtering with worldview-aware trust modifiers to runner.py",
+        "Write unit tests for archetypes, personas, worldviews, graph builder"
+      ]
+    },
+    {
+      "id": "api-layer",
+      "name": "API & Data Layer",
+      "description": "Build FastAPI endpoints, database migrations, Celery worker, auth. All endpoints from plan.md §8.",
+      "phase": 2,
+      "assigned_to": ["backend-eng", "qa-eng"],
+      "tasks": [
+        "Implement Pydantic schemas for all request/response models",
+        "Wire up SQLAlchemy models with Alembic migrations",
+        "Implement simulation CRUD endpoints (create, status, feed, report)",
+        "Set up Celery worker with Redis broker for async simulation",
+        "Add auth (JWT tokens, password hashing)",
+        "Write integration tests for all API endpoints"
+      ]
+    },
+    {
+      "id": "frontend-mvp",
+      "name": "Frontend MVP",
+      "description": "Build the web dashboard: submission form, results page with social feed + scores + recommendations, basic auth.",
+      "phase": 2,
+      "assigned_to": ["frontend-eng", "designer"],
+      "tasks": [
+        "Design and build material submission form (paste copy, describe audience, pick platform/industry)",
+        "Build results page: engagement scores + sentiment breakdown",
+        "Build social feed viewer — scrollable simulated social thread with persona avatars and reactions",
+        "Add Recharts visualizations: engagement timeline, sentiment distribution, demographic heatmap",
+        "Implement auth pages (sign up, sign in)",
+        "API integration: connect frontend to backend endpoints"
+      ]
+    },
+    {
+      "id": "polish-launch",
+      "name": "Polish & Launch",
+      "description": "Industry pack configs, prompt refinement, rate limiting, landing page, deploy to production.",
+      "phase": 3,
+      "assigned_to": ["backend-eng", "frontend-eng", "llm-eng", "designer"],
+      "tasks": [
+        "Refine prompt templates for persona quality and reaction realism",
+        "Configure all 3 MVP industry packs (SaaS B2B, E-commerce DTC, Consumer App)",
+        "Add rate limiting and usage tracking",
+        "Build landing page",
+        "Dockerize backend + frontend",
+        "Deploy to Fly.io or Railway"
+      ]
+    }
+  ]
+}
