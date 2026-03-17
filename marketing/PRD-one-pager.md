@@ -1,86 +1,101 @@
-# DualBrain — MVP Product Requirements Document
+# SimCrowd — MVP Product Requirements Document
 
-**Product**: DualBrain — Multi-Machine AI Agent Swarm
-**Version**: MVP v1.0 | **Date**: March 2026 | **Owner**: Product
+**Product**: SimCrowd — Social Simulation Engine for Marketing
+**Domain**: simcrowd.ai | **Version**: MVP v1.0 | **Date**: March 2026
 
 ---
 
 ## Problem
 
-Solo developers and small teams waste hours context-switching between analytical work (code review, testing, debugging) and creative work (design, research, planning, docs). AI assistants help, but they run on a single machine, lose context between sessions, and can't work autonomously overnight.
+Marketers spend thousands on ads before knowing if the copy resonates. Existing AI tools give you a score — "7/10, sounds good!" — but can't show you *why* a skeptical SaaS buyer would scroll past, or *how* a Gen Z early adopter would roast your landing page in a group chat. You're flying blind until real money is spent.
 
 ## Solution
 
-DualBrain turns two spare Macs into an always-on AI ops team with specialized brains:
+SimCrowd builds an AI crowd matched to your target demographic, drops your marketing material into a simulated social feed, and lets you watch what happens — before you spend a dollar on ads.
 
-- **Left Brain** (Analytical): Code review, security audits, TDD, build fixes, E2E testing
-- **Right Brain** (Creative): Planning, architecture, research, PRDs, documentation
+1. **Build a crowd** — 20-100+ AI personas from psychographic archetypes + worldview dimensions
+2. **Run the simulation** — agents encounter your material, react, comment, share (or don't), debate each other
+3. **Read the results** — engagement scores, a simulated social feed you can scroll, and actionable rewrites
 
-Triggered from your main Mac via CLI, Claude Code, or Telegram — with results reviewed by AI before delivery.
+The magic: you can read what "Sarah, 34, skeptical SaaS buyer" actually said about your ad to "Mike, 28, early adopter." Not a score. A simulation.
 
 ## Target User
 
-Solo developers, indie hackers, and small engineering teams (1-5 people) who own multiple Macs and want to maximize their hardware investment with autonomous AI agents.
+- Marketing teams testing copy before launch
+- Solo founders validating positioning
+- Agencies running multiple campaigns
+- Growth teams optimizing conversion
 
 ## MVP Scope
 
 | Feature | Description | Priority |
 |---------|-------------|----------|
-| Dual-brain dispatch | Send tasks to left, right, or both brains via CLI | P0 |
-| Pipeline execution | Claude reasoning → Ollama execution (hybrid cost model) | P0 |
-| Tailscale mesh networking | Encrypted, zero-config connectivity | P0 |
-| 13 specialized agents | 7 analytical + 6 creative, auto-triggered by context | P0 |
-| Telegram control | Mobile task dispatch + review-gated notifications | P1 |
-| OpenClaw gateway | Always-on API with heartbeat, memory flush, cron | P1 |
-| Second Brain integration | Obsidian vault for task ledger + knowledge base | P1 |
-| Browser control (Pinchtab) | HTTP API for browser automation on helpers | P2 |
-| Google Workspace CLI | Drive, Gmail, Calendar, Sheets, Docs via MCP | P2 |
-| Mission Control dashboard | Visual monitoring of helper status | P2 |
+| Copy submission | Paste ad copy, landing page, email, or social post | P0 |
+| Audience targeting | Describe target audience in natural language | P0 |
+| 10 persona archetypes | Skeptic, Early Adopter, Pragmatist, Loyalist, Influencer, Lurker, Budget-Conscious, Expert, Overwhelmed, Aspirational | P0 |
+| 7 worldview dimensions | Political, Religious, Cultural, Economic, Media Diet, Trust, Generational — 35 modifiers total | P0 |
+| 30-agent simulation | 7-turn social simulation with batched LLM calls | P0 |
+| Simulated social feed | Scrollable feed showing agent posts, comments, shares | P0 |
+| Engagement scores | Score (0-100), sentiment distribution, virality index, conversion probability | P0 |
+| Top 3 recommendations | Actionable rewrites addressing top objections | P0 |
+| 3 industry packs | SaaS B2B, E-commerce DTC, Consumer App | P0 |
+| Auth + paywall | Email/Google OAuth, 3 free runs then paywall | P1 |
+| Platform simulation | Twitter/X, LinkedIn, Instagram, Reddit behavior norms | P1 |
+| A/B variant testing | Run 2-4 variants against same crowd | P2 |
+| API access | REST API for Pro users | P2 |
+| PDF/PNG export | Downloadable reports | P2 |
 
 ## Key Differentiators
 
-1. **Runs on your hardware** — No cloud lock-in, no per-task SaaS fees
-2. **Dual specialization** — Analytical and creative brains with distinct personalities
-3. **Always-on** — OpenClaw keeps working overnight with memory persistence
-4. **Hybrid cost model** — Claude for reasoning (smart), Ollama for execution (free)
-5. **Review gate** — AI reviews every result before notifying you
+1. **Simulation, not scoring** — Read actual conversations, not just a number
+2. **Worldview dimensions** — Two "Skeptics" with different worldviews object to different things
+3. **Social dynamics** — Content spreads (or dies) through a realistic social graph
+4. **Batched economics** — $0.05-$0.15 per sim = 94%+ margins at scale
+5. **Industry packs** — Pre-configured crowd compositions for SaaS, DTC, Fintech, etc.
 
 ## Architecture
 
 ```
-Main Mac (trigger) ──Tailscale──→ Left Brain Mac (analytical agents)
-                    └──────────→ Right Brain Mac (creative agents)
-
-Each helper runs: Claude + Ollama + OpenClaw + Pinchtab + GWS
-Pipeline: Claude reasons → Ollama executes → Results reviewed → Telegram notify
+User → Submit Copy → Persona Generator → Social Graph Builder
+                                              ↓
+                              Simulation Runner (7 turns)
+                              Turn 0: Seeding
+                              Turns 1-2: Initial reactions (batched Haiku)
+                              Turns 3-5: Spread & discussion
+                              Turns 6-7: Settling + final actions
+                                              ↓
+                              Scoring Engine → Report + Feed + Recommendations
 ```
+
+**Cost per simulation**: ~$0.05-$0.15 (batched Haiku for reactions, Sonnet for persona gen + analysis)
 
 ## Success Metrics
 
 | Metric | Target |
 |--------|--------|
-| Setup time | < 30 minutes per helper |
-| Task dispatch latency | < 5 seconds |
-| Pipeline completion rate | > 95% |
-| Review gate accuracy | > 90% useful summaries |
-| Overnight task completion | > 80% success rate |
+| Simulation time | < 2 minutes for 30-agent sim |
+| User activation | > 60% complete first sim |
+| Free → Paid conversion | > 5% |
+| Sim accuracy vs real campaigns | > 70% sentiment correlation |
+| Monthly active users (6 months) | 500+ |
 
-## Out of Scope (MVP)
+## Pricing
 
-- Windows/Linux helper support
-- Cloud-hosted helpers
-- Multi-user / team management
-- Web dashboard (CLI + Telegram only)
-- Custom agent creation UI
+| Plan | Price | Sims/mo | Crowd Size | Features |
+|------|-------|---------|------------|----------|
+| Free | $0 | 3 | 20 agents | Basic scores only |
+| Starter | $49/mo | 20 | 50 agents | Full reports, 1 industry pack |
+| Pro | $149/mo | 100 | 100 agents | All packs, A/B, API access |
+| Enterprise | Custom | Unlimited | Custom | SSO, custom archetypes, white-label |
 
 ## Timeline
 
 | Phase | Duration | Deliverable |
 |-------|----------|-------------|
-| Alpha | 4 weeks | Core dispatch + pipeline + 5 agents |
-| Beta | 4 weeks | Full agent roster + Telegram + OpenClaw |
-| MVP Launch | 2 weeks | Polish, docs, setup automation |
+| Core Engine | Weeks 1-2 | Persona system, simulation runner, scoring, CLI proof-of-concept |
+| API + Frontend | Weeks 3-4 | FastAPI server, Next.js dashboard, submission form, results page |
+| Polish + Launch | Weeks 5-6 | Industry packs, charts, prompt tuning, landing page, deploy |
 
 ---
 
-*DualBrain: Your AI ops team, running on your hardware.*
+*SimCrowd: Test your marketing on AI crowds before spending a dollar on ads.*
