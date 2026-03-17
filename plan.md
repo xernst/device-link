@@ -93,29 +93,95 @@ Pre-designed persona archetypes organized by dimension, not industry. Mix and ma
 - Role: IC, manager, exec, founder, freelancer, student
 - Company size: solo, startup, SMB, mid-market, enterprise
 
-**Industry Packs** (pre-configured crowd compositions):
-- **SaaS B2B**: heavy on Pragmatists + Experts + Budget-Conscious, skews manager/exec
-- **E-commerce DTC**: heavy on Early Adopters + Aspirational + Budget-Conscious, skews younger
-- **Fintech**: heavy on Skeptics + Experts + Pragmatists, mixed ages
-- **Health/Wellness**: heavy on Aspirational + Overwhelmed + Skeptics
-- **Creator Economy**: heavy on Influencers + Early Adopters + Aspirational
-- **Enterprise Sales**: heavy on Pragmatists + Loyalists + Experts, skews exec
-- **Consumer App**: heavy on Early Adopters + Lurkers + Influencers, skews Gen Z/Millennial
+### 3.2 Worldview Dimensions
 
-### 3.2 Persona Generation Flow
+The key differentiator. Two "Skeptics" with different worldviews object to completely different things. Each persona gets one modifier per dimension, layered on top of their psychographic archetype.
+
+**7 Dimensions, 35 Modifiers:**
+
+**Political Orientation** (7 modifiers) — affects trust in institutions, reaction to corporate messaging:
+- Progressive, Moderate Left, Centrist, Moderate Right, Conservative, Libertarian, Apolitical
+
+**Religious / Spiritual** (4 modifiers) — affects reaction to values-based messaging, moral framing:
+- Secular, Spiritual Not Religious, Mainstream Religious, Devout
+
+**Cultural Orientation** (5 modifiers) — affects response to individualism vs. collectivism:
+- Individualist, Collectivist, Traditionalist, Cosmopolitan, Multicultural
+
+**Economic Worldview** (4 modifiers) — affects reaction to pricing, brand positioning, consumption:
+- Free Market, Conscious Capitalist, Anti-Consumerist, Aspiring Affluent
+
+**Media Diet** (5 modifiers) — affects what sources they trust, how they verify claims:
+- Mainstream, Alternative Media, Academic, Social Media Native, News Avoidant
+
+**Trust Orientation** (4 modifiers) — affects who they believe, what evidence they need:
+- Institution-Trusting, Peer-Trusting, Self-Reliant, Authority-Skeptical
+
+**Generational Identity** (4 modifiers) — beyond just age, the cultural imprint:
+- Gen Z (Digital Native), Millennial (Pragmatic Idealist), Gen X (Independent Skeptic), Boomer (Established)
+
+Each modifier carries:
+- **Trust modifiers** — numeric shifts to trust in different message types (e.g., Libertarian: government endorsement -0.3, decentralization claims +0.3)
+- **Positive triggers** — phrases that activate engagement (e.g., Anti-Consumerist: "buy less", "built to last", "repair")
+- **Negative triggers** — phrases that activate resistance (e.g., Anti-Consumerist: "limited edition", "flash sale", "FOMO")
+- **Sensitivity topics** — subjects where strong opinions emerge (e.g., Devout: "sexuality in marketing", "traditional family")
+
+### 3.3 How Dimensions Combine
+
+A persona's reaction to marketing is the intersection of all their dimensions:
+
+```
+Example: "Sarah, 34, Skeptic × Progressive × Secular × Anti-Consumerist × Academic × Self-Reliant"
+
+Sarah sees an ad for a new productivity SaaS:
+- Skeptic archetype: asks hard questions, needs proof → "Where's the evidence?"
+- Progressive worldview: checks for ethical labor practices → "Who built this?"
+- Secular: ignores any inspirational/spiritual framing → skips the "find your purpose" copy
+- Anti-Consumerist: resistant to upgrade cycles → "Will this replace 3 tools or add another?"
+- Academic media diet: wants data, not testimonials → "Show me the peer-reviewed study"
+- Self-Reliant trust: needs to try it herself → "Where's the free tier?"
+
+vs.
+
+"Mike, 28, Skeptic × Libertarian × Spiritual × Free Market × Alternative Media × Authority-Skeptical"
+
+Same archetype, completely different objections:
+- Skeptic archetype: same hard questions → "Prove it works"
+- Libertarian worldview: checks for vendor lock-in → "Can I export my data?"
+- Spiritual: open to mindfulness angle → doesn't mind "intentional productivity"
+- Free Market: respects premium pricing if quality → "Is the paid tier worth it?"
+- Alternative media: distrusts "as seen in TechCrunch" → "Who's really behind this?"
+- Authority-Skeptical: won't trust enterprise endorsements → "Fortune 500 use it? So what."
+```
+
+### 3.4 Industry Packs
+
+Pre-configured crowd compositions with both archetype AND worldview distributions:
+
+- **SaaS B2B**: heavy Pragmatists + Experts, skews Centrist/Moderate, Institution-Trusting, Free Market
+- **E-commerce DTC**: heavy Early Adopters + Aspirational, skews Progressive/Moderate Left, Social Native, Peer-Trusting
+- **Fintech**: heavy Skeptics + Experts, mixed political, Academic/Mainstream media, Self-Reliant
+- **Health/Wellness**: heavy Aspirational + Overwhelmed, skews Spiritual, Peer-Trusting, Conscious Capitalist
+- **Creator Economy**: heavy Influencers + Early Adopters, skews Gen Z, Social Native, Individualist
+- **Enterprise Sales**: heavy Pragmatists + Loyalists + Experts, skews Moderate Right/Centrist, Institution-Trusting
+- **Consumer App**: heavy Early Adopters + Lurkers + Influencers, skews Gen Z/Millennial, Social Native
+
+### 3.5 Persona Generation Flow
 
 ```
 User provides:
   - Target audience description (natural language)
   - Industry pack (optional, for defaults)
-  - Any specific persona overrides
+  - Any specific persona or worldview overrides
 
 System generates:
   1. Parse audience description → map to archetype distribution
-  2. Apply industry pack defaults (if selected)
+  2. Apply industry pack defaults (archetypes + worldviews)
   3. Generate N unique personas by combining:
      - Base archetype (personality, decision patterns, objection style)
      - Demographic modifiers (age, role, tech level)
+     - Worldview modifiers (1 per dimension, 7 total)
+     - Aggregated trust profile, triggers, and sensitivity topics
      - Unique backstory + current situation (LLM-generated)
      - Social graph position (influencer, connector, peripheral)
   4. Build social graph (who knows whom, who influences whom)
@@ -124,6 +190,11 @@ System generates:
 Each generated persona has:
 - **Name & background** (realistic, diverse)
 - **Archetype blend** (e.g., 60% Skeptic + 30% Expert + 10% Pragmatist)
+- **Worldview profile** (one modifier per dimension, 7 total)
+- **Trust profile** — merged numeric modifiers across all worldviews
+- **Positive triggers** — aggregated phrases that activate engagement
+- **Negative triggers** — aggregated phrases that activate resistance
+- **Sensitivity topics** — subjects that provoke strong reactions
 - **Decision triggers** — what makes them act
 - **Objection patterns** — what makes them resist
 - **Communication style** — how they talk (formal, casual, emoji-heavy, terse)
