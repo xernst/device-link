@@ -13,6 +13,11 @@
 #   TELEGRAM_BOT_TOKEN — your bot token from @BotFather
 #   TELEGRAM_CHAT_ID   — your personal chat ID
 
+# Load .env if credentials are not already set
+if [[ -z "${TELEGRAM_BOT_TOKEN:-}" && -f "$HOME/.device-link/telegram/.env" ]]; then
+    set +u; source "$HOME/.device-link/telegram/.env"; set -u
+fi
+
 TELEGRAM_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT="${TELEGRAM_CHAT_ID:-}"
 

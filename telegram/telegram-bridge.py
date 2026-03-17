@@ -307,7 +307,16 @@ async def watch_results(app: Application):
 def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    app = Application.builder().token(TOKEN).build()
+    async def post_init(application: Application) -> None:
+        """Start file watcher after app initializes."""
+        asyncio.create_task(watch_results(application))
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     # Command handlers
     app.add_handler(CommandHandler("status", cmd_status))
@@ -329,9 +338,6 @@ def main():
     logger.info("Device-Link Telegram bridge starting...")
     logger.info(f"Authorized chat ID: {AUTHORIZED_CHAT_ID}")
     logger.info(f"Left brain: {LEFT_HOST}, Right brain: {RIGHT_HOST}")
-
-    # Start file watcher after app starts
-    app.post_init = lambda a: asyncio.create_task(watch_results(a))
 
     app.run_polling(drop_pending_updates=True)
 
