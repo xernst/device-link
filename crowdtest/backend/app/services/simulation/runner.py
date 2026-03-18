@@ -211,6 +211,7 @@ class SimulationState:
     """Full simulation state across both platforms."""
     material_content: str
     material_metadata: dict = field(default_factory=dict)  # extracted entities, tone, etc.
+    visual_context: str | None = None  # pre-built visual description from vision engine
     env_config: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     personas: list[dict] = field(default_factory=list)
     graph: object = None  # SocialGraph
@@ -241,6 +242,7 @@ def initialize_simulation(
     personas: list[dict],
     graph: object,
     env_config: EnvironmentConfig | None = None,
+    visual_context: str | None = None,
 ) -> SimulationState:
     """Initialize simulation state with MiroFish-aligned defaults."""
     config = env_config or EnvironmentConfig()
@@ -268,6 +270,7 @@ def initialize_simulation(
         env_config=config,
         memories=memories,
         platform_states=platform_states,
+        visual_context=visual_context,
     )
 
 

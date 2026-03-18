@@ -41,6 +41,8 @@ Return a JSON array with one object per user:
 BATCH_REACTION_USER = """## Marketing Material
 {material}
 
+{visual_context}
+
 ## Users to Simulate
 {personas_json}
 
@@ -55,7 +57,7 @@ Social proof: {social_proof:.1f}x.
 ## Recent Activity on This Platform
 {recent_activity}
 
-Generate each user's authentic reaction. Consider their memory of past rounds, their current opinion score, and who they've interacted with before. Agents who've been burned are harder to win back. Champions defend the content. Trolls provoke. Lurkers stay silent. Be realistic."""
+Generate each user's authentic reaction. Consider the FULL post (text AND visual content). Agents react to what they SEE — a polished studio photo lands differently than a raw UGC selfie. Consider their memory of past rounds, their current opinion score, and who they've interacted with before. Agents who've been burned are harder to win back. Champions defend the content. Trolls provoke. Lurkers stay silent. Be realistic."""
 
 # ──────────────────────────────────────────────────────────────────────
 # Environment Configuration Prompt (Sonnet — sets rules of the world)
@@ -222,6 +224,7 @@ async def call_batch_reactions(
     controversy: float = 0.0,
     social_proof: float = 1.0,
     available_actions: str = "",
+    visual_context: str = "",
 ) -> list[dict]:
     """Call Haiku with batched persona reactions. Returns list of reaction dicts."""
     # TODO: implement with anthropic SDK

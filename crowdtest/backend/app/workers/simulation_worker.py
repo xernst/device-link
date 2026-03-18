@@ -77,8 +77,9 @@ async def run_simulation_task(simulation_id: str):
     # influence_map = {p["id"]: p["influence_weight"] for p in enriched}
     # graph = build_social_graph([p["id"] for p in enriched], influence_map)
     #
-    # 5. Initialize + run
-    # state = initialize_simulation(material, enriched, graph, env)
+    # 5. Initialize + run (with visual context if material has images)
+    # visual_ctx = material_record.visual_context  # pre-built by vision engine at upload
+    # state = initialize_simulation(material, enriched, graph, env, visual_context=visual_ctx)
     # final_state = await run_simulation(state)
     #
     # 6. Analysis

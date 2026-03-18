@@ -54,6 +54,13 @@ class Material(Base):
     content = Column(Text, nullable=False)
     platform = Column(String(50))
     variant_label = Column(String(100))
+
+    # Visual content (images, carousels)
+    media_type = Column(String(50))  # image, video_thumbnail, carousel, gif (null = text-only)
+    media_paths = Column(JSON)  # list of stored file paths ["/uploads/abc123.png"]
+    visual_analysis = Column(JSON)  # VisualAnalysis output from vision engine
+    visual_context = Column(Text)  # pre-built text description for agent prompts
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     project = relationship("Project", back_populates="materials")
