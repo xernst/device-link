@@ -301,6 +301,87 @@ Resources:
             Path: /screenings/{candidate_id}/{screening_id}/complete
             Method: POST
 
+  # ---- Scraping functions ----
+  ScrapeSearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.search
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/search
+            Method: POST
+
+  ScrapeImportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.import_jobs
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/import
+            Method: POST
+
+  # ---- Filtering functions ----
+  RankCandidatesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.rank_candidates
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/candidates/rank
+            Method: GET
+
+  MatchCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.match_candidate
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/match
+            Method: GET
+
+  ScoreCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.score
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/score
+            Method: POST
+
   # ---- Utility functions ----
   HealthFunction:
     Type: AWS::Serverless::Function
