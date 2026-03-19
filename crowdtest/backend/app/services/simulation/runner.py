@@ -353,6 +353,13 @@ def should_engage(persona: dict, memory: AgentMemory, state: SimulationState) ->
     opinion_intensity = abs(memory.opinion_score)
     adjusted *= (1.0 + opinion_intensity * 0.3)
 
+    # ── WORLDVIEW COLLISION MODIFIER ──
+    # Content that triggers worldview reactions (positive or negative) drives engagement
+    worldview_collision = _check_worldview_collision(persona, state.material_content)
+    if abs(worldview_collision) > 0.2:
+        # Strong reactions (love or hate) drive engagement
+        adjusted *= (1.0 + abs(worldview_collision) * 0.8)
+
     # ── HUMOR MODIFIER ──
     # This is the key: humor profile of the content x humor worldview of the agent
     if state.humor_profile is not None:
@@ -765,8 +772,24 @@ def _pick_action_and_sentiment(
         remixability = hp.remixability if hasattr(hp, 'remixability') else 0.0
         screenshot_bait = hp.screenshot_bait if hasattr(hp, 'screenshot_bait') else 0.0
 
-    # ── SENTIMENT (humor-aware) ──
-    if humor_compatibility < 0:
+    # ── WORLDVIEW COLLISION CHECK ──
+    # Check if content text triggers negative worldview reactions
+    # This catches culture war dynamics (Bud Light), tone-deaf messaging (Pepsi), etc.
+    worldview_collision = _check_worldview_collision(persona, state.material_content)
+
+    # ── TONE-DEAF CHECK ──
+    # High cringe_probability with any tone (including NONE) = tone-deaf content
+    # This catches Pepsi/Kendall Jenner: not trying to be funny, just wildly out of touch
+    is_tone_deaf = cringe_prob > 0.5 and content_tone == "none"
+
+    # ── SENTIMENT (humor-aware + worldview-aware) ──
+    if worldview_collision < -0.5:
+        # Strong worldview clash overrides humor sentiment
+        sentiment = Sentiment.HOSTILE if worldview_collision < -0.8 else Sentiment.NEGATIVE
+    elif is_tone_deaf and cringe_prob > 0.6:
+        # Tone-deaf content: most people sense something is off
+        sentiment = Sentiment.NEGATIVE if random.random() < cringe_prob else Sentiment.NEUTRAL
+    elif humor_compatibility < 0:
         # Negative compatibility = they find this cringe/offensive
         if humor_compatibility < -1.0:
             sentiment = Sentiment.HOSTILE
@@ -782,10 +805,42 @@ def _pick_action_and_sentiment(
     else:
         sentiment = Sentiment.NEUTRAL
 
-    # ── ACTION SELECTION (humor-driven) ──
+    # ── ACTION SELECTION (humor-driven + worldview-driven) ──
     r = random.random()
     share_rate = persona.get("share_rate", 0.2) * config.humor_share_multiplier
     dark_social_rate = config.dark_social_rate * config.humor_dark_social_modifier
+
+    # WORLDVIEW OUTRAGE PATH: culture war / sensitivity collision
+    if worldview_collision < -0.5:
+        outrage_roll = random.random()
+        if outrage_roll < 0.25:
+            return ActionType.QUOTE, sentiment  # outraged QT
+        elif outrage_roll < 0.45:
+            return ActionType.COMMENT, sentiment  # angry comment
+        elif outrage_roll < 0.60:
+            return ActionType.SCREENSHOT, sentiment  # screenshot to share outrage
+        elif outrage_roll < 0.70:
+            return ActionType.DM, sentiment  # "can you believe this?" DM
+        elif outrage_roll < 0.80:
+            return ActionType.BLOCK, Sentiment.HOSTILE  # block the brand
+        elif outrage_roll < 0.90:
+            return ActionType.REPORT, Sentiment.HOSTILE  # report the post
+        else:
+            return ActionType.SHARE, sentiment  # share to mobilize opposition
+
+    # TONE-DEAF PATH: not trying to be funny, just out of touch (Pepsi/Kendall)
+    if is_tone_deaf and cringe_prob > 0.5:
+        dunk_roll = random.random()
+        if dunk_roll < 0.30 and platform == Platform.TWITTER:
+            return ActionType.QUOTE, Sentiment.NEGATIVE  # "did they really just..."
+        elif dunk_roll < 0.50:
+            return ActionType.SCREENSHOT, Sentiment.NEGATIVE  # screenshot for mockery
+        elif dunk_roll < 0.70:
+            return ActionType.COMMENT, Sentiment.NEGATIVE  # "read the room"
+        elif dunk_roll < 0.85:
+            return ActionType.DM, Sentiment.NEGATIVE  # "you gotta see this"
+        else:
+            return ActionType.SHARE, Sentiment.NEGATIVE  # share to mock
 
     # CRINGE DUNK PATH: meme natives and sarcasm defaults dunk on cringe
     if humor_compatibility < 0 and cringe_prob > 0.3:
@@ -841,6 +896,46 @@ def _pick_action_and_sentiment(
         action = random.choice([ActionType.BLOCK, ActionType.REPORT])
 
     return action, sentiment
+
+
+def _check_worldview_collision(persona: dict, content: str) -> float:
+    """Check if content text collides with persona's worldview triggers.
+
+    Returns a score from -1.0 (strong collision) to +1.0 (strong alignment).
+    0.0 = no triggers hit.
+
+    This catches culture war dynamics: a conservative persona seeing Pride content,
+    a progressive persona seeing tone-deaf appropriation, etc.
+    """
+    content_lower = content.lower()
+
+    # Check negative triggers (worldview-specific words that cause rejection)
+    negative_triggers = persona.get("negative_triggers", [])
+    negative_hits = sum(1 for t in negative_triggers if t.lower() in content_lower)
+
+    # Check positive triggers (words that resonate with this worldview)
+    positive_triggers = persona.get("positive_triggers", [])
+    positive_hits = sum(1 for t in positive_triggers if t.lower() in content_lower)
+
+    # Check sensitivity topics
+    sensitivity_topics = persona.get("sensitivity_topics", [])
+    sensitivity_hits = sum(1 for t in sensitivity_topics if t.lower() in content_lower)
+
+    # Compute collision score
+    # Each negative trigger is a -0.15 hit, each positive is +0.1
+    # Sensitivity topics amplify negative hits
+    score = (positive_hits * 0.1) - (negative_hits * 0.15) - (sensitivity_hits * 0.1)
+
+    # If both positive and negative triggers fire, it's polarizing
+    # (this is the Bud Light scenario — some love it, some hate it)
+    if positive_hits > 0 and negative_hits > 0:
+        # Amplify the dominant direction
+        if negative_hits > positive_hits:
+            score -= 0.2  # lean into the collision
+        elif positive_hits > negative_hits:
+            score += 0.1
+
+    return max(-1.0, min(1.0, score))
 
 
 def _sentiment_to_opinion_delta(sentiment: Sentiment, config: EnvironmentConfig) -> float:

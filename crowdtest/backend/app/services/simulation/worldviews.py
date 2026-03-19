@@ -112,8 +112,8 @@ POLITICAL: dict[str, WorldviewModifier] = {
             "patriotic_messaging": 0.2,
         },
         positive_triggers=["trusted", "time-tested", "family values", "patriotic", "secure", "faith-based", "heritage"],
-        negative_triggers=["disrupt", "reimagine", "deconstruct", "non-binary", "privilege", "colonialism"],
-        sensitivity_topics=["cultural change", "religious freedom", "national identity", "gun rights", "immigration"],
+        negative_triggers=["disrupt", "reimagine", "deconstruct", "non-binary", "privilege", "colonialism", "pride", "trans", "woke", "girlhood"],
+        sensitivity_topics=["cultural change", "religious freedom", "national identity", "gun rights", "immigration", "gender identity"],
     ),
     "libertarian": WorldviewModifier(
         id="libertarian",
@@ -212,7 +212,7 @@ RELIGIOUS: dict[str, WorldviewModifier] = {
             "hedonistic_messaging": -0.3,
         },
         positive_triggers=["faith", "family", "purpose-driven", "God", "blessing", "service", "stewardship", "moral"],
-        negative_triggers=["pride month", "your truth", "pleasure-first", "no rules", "liberation from tradition"],
+        negative_triggers=["pride month", "pride", "your truth", "pleasure-first", "no rules", "liberation from tradition"],
         sensitivity_topics=["sexuality in marketing", "religious freedom", "traditional family", "modesty"],
     ),
 }
@@ -755,7 +755,7 @@ INDUSTRY_WORLDVIEW_DEFAULTS: dict[str, dict[str, dict[str, float]]] = {
         "humor": {"dry_wit": 0.25, "sarcasm_default": 0.25, "no_humor": 0.2, "meme_native": 0.15, "cultural_humor": 0.15},
     },
     "ecommerce_dtc": {
-        "political": {"moderate_left": 0.25, "progressive": 0.2, "centrist": 0.2, "apolitical": 0.2, "moderate_right": 0.15},
+        "political": {"moderate_left": 0.2, "progressive": 0.15, "centrist": 0.2, "apolitical": 0.15, "moderate_right": 0.15, "conservative": 0.1, "libertarian": 0.05},
         "economic": {"aspiring_affluent": 0.3, "conscious_capitalism": 0.25, "free_market": 0.25, "anti_consumerist": 0.2},
         "media_diet": {"social_native": 0.4, "mainstream": 0.25, "alternative_media": 0.2, "news_avoidant": 0.15},
         "trust": {"peer_trusting": 0.4, "self_reliant": 0.25, "institution_trusting": 0.2, "authority_skeptical": 0.15},

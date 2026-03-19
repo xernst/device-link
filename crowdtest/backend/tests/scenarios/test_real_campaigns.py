@@ -73,7 +73,8 @@ CAMPAIGNS = {
         "name": "Bud Light x Dylan Mulvaney Pride Campaign",
         "content": (
             "Cheers to 365 days of girlhood 🎉 @DylanMulvaney celebrates with Bud Light. "
-            "Here's to the moments that make us who we are. #BudLight #Pride"
+            "Here's to the moments that make us who we are. Trans pride is beautiful. "
+            "Stand with inclusion. #BudLight #Pride"
         ),
         "visual_description": (
             "Dylan Mulvaney holding a custom Bud Light can with her face on it, "
