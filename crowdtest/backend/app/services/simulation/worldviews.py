@@ -598,6 +598,142 @@ GENERATIONAL: dict[str, WorldviewModifier] = {
 # Registry: all dimensions in one place
 # =============================================================================
 
+# =============================================================================
+# DIMENSION 8: Humor & Tone Literacy (how agents process social media humor)
+# =============================================================================
+
+HUMOR: dict[str, WorldviewModifier] = {
+    "meme_native": WorldviewModifier(
+        id="meme_native",
+        dimension="humor",
+        label="Meme Native",
+        description="Fluent in internet humor. Recognizes meme formats instantly. Judges brands by meme quality. Will roast cringe attempts. Communicates primarily through references and irony.",
+        trust_modifiers={
+            "meme_marketing": 0.3,
+            "self_aware_humor": 0.25,
+            "corporate_cringe": -0.35,
+            "deadpan_delivery": 0.2,
+            "try_hard_humor": -0.3,
+        },
+        positive_triggers=["self-aware", "shitpost", "based", "unhinged brand account", "ratio", "W take"],
+        negative_triggers=["fellow kids", "we're all about the vibes", "it's giving", "slay queen", "yasss"],
+        sensitivity_topics=["forced relatability", "brands using tragedy for engagement", "performative humor"],
+    ),
+    "dry_wit": WorldviewModifier(
+        id="dry_wit",
+        dimension="humor",
+        label="Dry Wit / Deadpan",
+        description="Appreciates understated, clever humor. Sarcasm is their first language. Eye-rolls at obvious jokes. Values wit over spectacle.",
+        trust_modifiers={
+            "subtle_humor": 0.25,
+            "intellectual_wit": 0.2,
+            "slapstick": -0.15,
+            "pun_heavy": -0.1,
+            "clever_wordplay": 0.2,
+        },
+        positive_triggers=["actually clever", "understatement", "dry", "subtle", "deadpan"],
+        negative_triggers=["LMAO SO RANDOM", "wait for it...", "😂😂😂", "I can't even", "who did this"],
+        sensitivity_topics=["lowest common denominator humor", "explaining the joke"],
+    ),
+    "wholesome_humor": WorldviewModifier(
+        id="wholesome_humor",
+        dimension="humor",
+        label="Wholesome / Feel-Good",
+        description="Enjoys positive, uplifting humor. Shares heartwarming content. Avoids edgy or mean-spirited comedy. The 'this made my day' crowd.",
+        trust_modifiers={
+            "heartwarming_content": 0.3,
+            "uplifting_humor": 0.25,
+            "edgy_comedy": -0.25,
+            "mean_spirited": -0.35,
+            "cute_factor": 0.2,
+        },
+        positive_triggers=["wholesome", "faith in humanity", "made my day", "crying happy tears", "protect this"],
+        negative_triggers=["dark humor", "savage", "destroyed", "brutal", "roasted"],
+        sensitivity_topics=["bullying disguised as humor", "punching down", "shock value"],
+    ),
+    "edgy_humor": WorldviewModifier(
+        id="edgy_humor",
+        dimension="humor",
+        label="Edgy / Dark Comedy",
+        description="Pushes boundaries. Appreciates taboo-breaking, shock humor, and brands that aren't afraid to offend. The Wendy's Twitter energy.",
+        trust_modifiers={
+            "edgy_brand_voice": 0.3,
+            "roast_culture": 0.25,
+            "corporate_safe": -0.2,
+            "pushing_boundaries": 0.2,
+            "sanitized_humor": -0.15,
+        },
+        positive_triggers=["savage", "no chill", "unhinged", "chose violence", "shots fired", "brand beef"],
+        negative_triggers=["family friendly", "appropriate", "tasteful", "respectful humor", "clean fun"],
+        sensitivity_topics=["punching down vs punching up", "crossing the line into cruelty"],
+    ),
+    "no_humor": WorldviewModifier(
+        id="no_humor",
+        dimension="humor",
+        label="Humor-Resistant / Serious",
+        description="Doesn't engage with humor in professional/brand context. Finds brand humor unprofessional. Wants substance, not laughs.",
+        trust_modifiers={
+            "professional_tone": 0.25,
+            "data_driven": 0.2,
+            "humor_in_marketing": -0.2,
+            "meme_marketing": -0.25,
+            "serious_messaging": 0.2,
+        },
+        positive_triggers=["professional", "data shows", "research-backed", "industry-leading"],
+        negative_triggers=["lol", "relatable content", "we don't take ourselves seriously", "fun brand"],
+        sensitivity_topics=["trivialization of serious topics", "humor masking lack of substance"],
+    ),
+    "sarcasm_default": WorldviewModifier(
+        id="sarcasm_default",
+        dimension="humor",
+        label="Sarcasm as Default Mode",
+        description="Everything is met with sarcasm first. Quote-tweets with eye rolls. Will dunk on brands that set themselves up. The 'oh wow another AI tool' energy.",
+        trust_modifiers={
+            "self_deprecating_brand": 0.2,
+            "earnest_marketing": -0.15,
+            "overconfident_claims": -0.25,
+            "acknowledging_competition": 0.15,
+            "corporate_speak": -0.3,
+        },
+        positive_triggers=["at least they're honest", "okay that's actually good", "I'll give them this one"],
+        negative_triggers=["revolutionary", "game-changing", "disrupting", "reimagining", "the future of"],
+        sensitivity_topics=["brands being earnest about mediocre products", "tech hype cycles"],
+    ),
+    "absurdist": WorldviewModifier(
+        id="absurdist",
+        dimension="humor",
+        label="Absurdist / Surreal",
+        description="Appreciates bizarre, nonsensical humor. The weirder the better. Loves brands that embrace chaos. Duolingo owl energy.",
+        trust_modifiers={
+            "weird_brand_voice": 0.3,
+            "surreal_content": 0.25,
+            "conventional_marketing": -0.2,
+            "predictable_format": -0.15,
+            "unhinged_social": 0.2,
+        },
+        positive_triggers=["chaotic", "unhinged", "cursed", "why does this exist", "fever dream", "absurd"],
+        negative_triggers=["straightforward", "clear messaging", "professional", "on-brand"],
+        sensitivity_topics=["brands trying to be random without commitment", "forced randomness"],
+    ),
+    "cultural_humor": WorldviewModifier(
+        id="cultural_humor",
+        dimension="humor",
+        label="Cultural / Reference-Heavy",
+        description="Humor rooted in specific cultural references — TV shows, music, historical events, niche communities. Gets in-jokes. Loves easter eggs.",
+        trust_modifiers={
+            "cultural_references": 0.25,
+            "in_jokes": 0.2,
+            "niche_humor": 0.2,
+            "generic_humor": -0.15,
+            "easter_eggs": 0.15,
+        },
+        positive_triggers=["IYKYK", "understood the assignment", "main character energy", "deep cut", "reference"],
+        negative_triggers=["broad appeal", "everyone will love", "universal humor", "inoffensive"],
+        sensitivity_topics=["misusing cultural references", "appropriating niche humor for mass appeal"],
+    ),
+}
+
+
 ALL_DIMENSIONS: dict[str, dict[str, WorldviewModifier]] = {
     "political": POLITICAL,
     "religious": RELIGIOUS,
@@ -606,6 +742,7 @@ ALL_DIMENSIONS: dict[str, dict[str, WorldviewModifier]] = {
     "media_diet": MEDIA_DIET,
     "trust": TRUST,
     "generational": GENERATIONAL,
+    "humor": HUMOR,
 }
 
 # Default distributions per industry pack (which worldviews are most common)
@@ -615,17 +752,20 @@ INDUSTRY_WORLDVIEW_DEFAULTS: dict[str, dict[str, dict[str, float]]] = {
         "economic": {"free_market": 0.4, "conscious_capitalism": 0.3, "aspiring_affluent": 0.2, "anti_consumerist": 0.1},
         "media_diet": {"mainstream": 0.3, "academic": 0.25, "social_native": 0.2, "alternative_media": 0.15, "news_avoidant": 0.1},
         "trust": {"institution_trusting": 0.3, "peer_trusting": 0.3, "self_reliant": 0.25, "authority_skeptical": 0.15},
+        "humor": {"dry_wit": 0.25, "sarcasm_default": 0.25, "no_humor": 0.2, "meme_native": 0.15, "cultural_humor": 0.15},
     },
     "ecommerce_dtc": {
         "political": {"moderate_left": 0.25, "progressive": 0.2, "centrist": 0.2, "apolitical": 0.2, "moderate_right": 0.15},
         "economic": {"aspiring_affluent": 0.3, "conscious_capitalism": 0.25, "free_market": 0.25, "anti_consumerist": 0.2},
         "media_diet": {"social_native": 0.4, "mainstream": 0.25, "alternative_media": 0.2, "news_avoidant": 0.15},
         "trust": {"peer_trusting": 0.4, "self_reliant": 0.25, "institution_trusting": 0.2, "authority_skeptical": 0.15},
+        "humor": {"meme_native": 0.3, "wholesome_humor": 0.25, "cultural_humor": 0.2, "sarcasm_default": 0.15, "absurdist": 0.1},
     },
     "consumer_app": {
         "political": {"apolitical": 0.3, "moderate_left": 0.2, "progressive": 0.2, "centrist": 0.2, "libertarian": 0.1},
         "economic": {"aspiring_affluent": 0.3, "free_market": 0.25, "conscious_capitalism": 0.25, "anti_consumerist": 0.2},
         "media_diet": {"social_native": 0.45, "mainstream": 0.2, "alternative_media": 0.2, "news_avoidant": 0.15},
         "trust": {"peer_trusting": 0.35, "self_reliant": 0.25, "institution_trusting": 0.2, "authority_skeptical": 0.2},
+        "humor": {"meme_native": 0.3, "absurdist": 0.2, "edgy_humor": 0.15, "sarcasm_default": 0.15, "cultural_humor": 0.2},
     },
 }

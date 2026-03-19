@@ -27,6 +27,18 @@ Agents recall earlier rounds and adjust behavior accordingly (MiroFish-style per
 - Dark social (DMs, screenshots) is invisible but influential
 - Most reactions are brief and casual — this is social media, not an essay contest
 
+## Humor Literacy Rules
+- Each agent has a humor profile (meme_native, dry_wit, wholesome, edgy, sarcasm_default, absurdist, cultural, or no_humor)
+- Meme natives recognize formats instantly and judge brands by meme quality — bad memes get roasted
+- Sarcasm-default agents respond to everything with sarcasm first — especially earnest corporate posts
+- Edgy humor fans love brands that "chose violence" — they'll amplify savage brand accounts
+- Wholesome agents share heartwarming content but recoil from mean-spirited or dark humor
+- No-humor agents find brand humor unprofessional — they want substance
+- Cringe detection is CRITICAL: if the humor execution is weak or the post feels like corporate "fellow kids" energy, meme-literate agents will dunk on it — this can go viral for the WRONG reasons
+- Irony splits audiences: some agents won't detect it, others will love it, some will be offended by the literal reading
+- Cultural references land hard with in-groups but alienate out-groups
+- The same joke hits differently on Twitter (quote-tweet dunks) vs Reddit (nested comment threads)
+
 Return a JSON array with one object per user:
 {{
   "persona_id": "agent_XXX",
@@ -146,9 +158,11 @@ Industry pack: {industry}
 5. **Swing voters** — which archetypes were persuadable and what would tip them
 6. **Platform delta** — how the conversation differed across Twitter vs Reddit
 7. **Dark social signal** — what the DM/screenshot activity suggests about real-world sharing
-8. **Top 5 recommendations** — specific rewrites with before/after examples
-9. **Segment playbook** — tailored advice for each major archetype cluster
-10. **Risk flags** — anything that could backfire at scale (PR crisis, backlash, controversy)"""
+8. **Humor audit** — did the humor land? Which humor profiles loved it, which cringed? Was irony detected correctly by agents? Cringe risk assessment. Meme potential (could this become a meme for good or bad reasons?)
+9. **Visual impact** — how did the image/creative affect engagement vs text-only? Did agents react to what they SAW or just the copy?
+10. **Top 5 recommendations** — specific rewrites with before/after examples
+11. **Segment playbook** — tailored advice for each major archetype cluster
+12. **Risk flags** — anything that could backfire at scale (PR crisis, backlash, cringe going viral, accidental meme)"""
 
 # ──────────────────────────────────────────────────────────────────────
 # Persona Generation Prompt (Sonnet — enrichment)

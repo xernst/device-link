@@ -66,6 +66,14 @@ class VisualAnalysis:
     emotional_appeal: str  # aspirational, fear, humor, curiosity, outrage, etc.
     likely_reactions: list[str]  # predicted reaction types based on visual
 
+    # Humor & tone analysis
+    humor_type: str | None  # meme, satire, parody, irony, shitpost, wholesome, none
+    humor_format: str | None  # recognized meme template name if applicable
+    humor_execution_score: float  # 0-1, how well the humor lands (0 = cringe, 1 = perfect)
+    cringe_risk: float  # 0-1, probability of being perceived as "fellow kids" cringe
+    irony_detected: bool  # is the image/text using irony or sarcasm?
+    reference_type: str | None  # pop culture, internet culture, niche community, none
+
     # Raw data
     image_hash: str  # for dedup
     dimensions: tuple[int, int] | None  # width x height
@@ -77,9 +85,16 @@ class VisualAnalysis:
 # Vision Analysis Prompts
 # ──────────────────────────────────────────────────────────────────────
 
-VISION_ANALYSIS_SYSTEM = """You are a social media visual analyst. You analyze images from marketing materials and social posts to help simulate how real people would react to them in their feed.
+VISION_ANALYSIS_SYSTEM = """You are a social media visual analyst with deep fluency in internet culture, meme formats, and social media humor.
 
-Your analysis should capture what a person scrolling through their feed would notice in the first 1-3 seconds, plus deeper elements they'd see if they stopped to look.
+You analyze images from marketing materials and social posts to help simulate how real people would react to them in their feed.
+
+Your analysis should capture:
+1. What a person scrolling sees in 1-3 seconds
+2. Deeper elements they'd notice if they stopped
+3. HUMOR ANALYSIS: Is this trying to be funny? What kind of humor? Does it land? Would internet-savvy people cringe or laugh? Is it using a recognizable meme format? Is there irony or sarcasm? Could this become a meme itself (intentionally or not)?
+
+You are an expert at detecting: meme formats (Drake, distracted boyfriend, galaxy brain, wojak, etc.), corporate cringe, intentional shitposting, irony layers, cultural references, and the difference between brands that "get it" and brands that are trying too hard.
 
 Return structured JSON."""
 
@@ -104,7 +119,13 @@ Return JSON with these fields:
   "platform_fit": {{"twitter": 0.0-1.0, "reddit": 0.0-1.0, "instagram": 0.0-1.0, "linkedin": 0.0-1.0}},
   "scroll_stopping_score": 0.0-1.0,
   "emotional_appeal": "primary emotional trigger",
-  "likely_reactions": ["predicted reaction types"]
+  "likely_reactions": ["predicted reaction types"],
+  "humor_type": "meme/satire/parody/irony/shitpost/wholesome/cringe_attempt/none",
+  "humor_format": "name of recognized meme template if applicable, else null",
+  "humor_execution_score": 0.0-1.0 (how well the humor lands; 0=cringe 1=perfect; null if not humor),
+  "cringe_risk": 0.0-1.0 (probability of being perceived as 'fellow kids' corporate cringe),
+  "irony_detected": true/false (is the image/text using irony, sarcasm, or saying the opposite of what it means?),
+  "reference_type": "pop_culture/internet_culture/niche_community/current_events/none"
 }}"""
 
 # Prompt for generating what agents "see" — injected into batch reaction prompts
@@ -114,7 +135,8 @@ Visual tone: {visual_tone}. Style: {style_tags}.
 {text_in_image_line}
 {people_line}
 {products_line}
-Scroll-stopping score: {scroll_stopping_score}/10 — {scroll_stopping_note}"""
+Scroll-stopping score: {scroll_stopping_score}/10 — {scroll_stopping_note}
+{humor_line}"""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -243,6 +265,12 @@ async def analyze_image(
         scroll_stopping_score=data.get("scroll_stopping_score", 0.5),
         emotional_appeal=data.get("emotional_appeal", ""),
         likely_reactions=data.get("likely_reactions", []),
+        humor_type=data.get("humor_type"),
+        humor_format=data.get("humor_format"),
+        humor_execution_score=data.get("humor_execution_score", 0.0),
+        cringe_risk=data.get("cringe_risk", 0.0),
+        irony_detected=data.get("irony_detected", False),
+        reference_type=data.get("reference_type"),
         image_hash=image_hash,
         dimensions=None,  # TODO: extract from image metadata
         file_size_bytes=Path(image_path).stat().st_size,
@@ -303,6 +331,27 @@ def build_visual_context(analysis: VisualAnalysis) -> str:
     else:
         scroll_note = "easy to scroll past"
 
+    # Build humor context line
+    humor_line = ""
+    if analysis.humor_type and analysis.humor_type != "none":
+        humor_parts = [f"Humor detected: {analysis.humor_type}"]
+        if analysis.humor_format:
+            humor_parts.append(f"(uses '{analysis.humor_format}' format)")
+        exec_score = analysis.humor_execution_score
+        if exec_score >= 0.7:
+            humor_parts.append("— well executed, likely to land")
+        elif exec_score >= 0.4:
+            humor_parts.append("— decent attempt, mixed reactions expected")
+        else:
+            humor_parts.append("— weak execution, cringe risk is high")
+        if analysis.cringe_risk > 0.5:
+            humor_parts.append(f"⚠️ Cringe risk: {analysis.cringe_risk:.0%} (may trigger 'fellow kids' reactions)")
+        if analysis.irony_detected:
+            humor_parts.append("Uses irony/sarcasm — will split audiences (some won't get it)")
+        if analysis.reference_type and analysis.reference_type != "none":
+            humor_parts.append(f"References: {analysis.reference_type}")
+        humor_line = " ".join(humor_parts)
+
     return VISUAL_CONTEXT_TEMPLATE.format(
         description=analysis.description,
         visual_tone=analysis.visual_tone,
@@ -312,6 +361,7 @@ def build_visual_context(analysis: VisualAnalysis) -> str:
         products_line=products_line,
         scroll_stopping_score=round(score * 10, 1),
         scroll_stopping_note=scroll_note,
+        humor_line=humor_line,
     )
 
 
