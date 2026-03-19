@@ -227,6 +227,7 @@ class SimulationState:
     material_metadata: dict = field(default_factory=dict)  # extracted entities, tone, etc.
     visual_context: str | None = None  # pre-built visual description from vision engine
     humor_profile: object | None = None  # ContentHumorProfile — the content's humor DNA
+    cultural_pulse: object | None = None  # CulturalPulse — current cultural context
     env_config: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     personas: list[dict] = field(default_factory=list)
     graph: object = None  # SocialGraph
@@ -261,13 +262,23 @@ def initialize_simulation(
     env_config: EnvironmentConfig | None = None,
     visual_context: str | None = None,
     humor_profile: object | None = None,
+    cultural_pulse: object | None = None,
 ) -> SimulationState:
     """Initialize simulation state with MiroFish-aligned defaults.
 
     If a ContentHumorProfile is provided, its engine modifiers are baked
     into the EnvironmentConfig so humor affects every mechanic.
+
+    If a CulturalPulse is provided, persona triggers are augmented with
+    culturally relevant terms so agents react to the current moment.
     """
     config = env_config or EnvironmentConfig()
+
+    # Augment persona triggers with cultural context
+    if cultural_pulse is not None:
+        from app.services.simulation.culture import augment_persona_triggers
+        for persona in personas:
+            augment_persona_triggers(persona, cultural_pulse)
 
     # Bake humor modifiers into env config
     if humor_profile is not None:
@@ -302,6 +313,7 @@ def initialize_simulation(
         memories=memories,
         platform_states=platform_states,
         visual_context=visual_context,
+        cultural_pulse=cultural_pulse,
         humor_profile=humor_profile,
     )
 

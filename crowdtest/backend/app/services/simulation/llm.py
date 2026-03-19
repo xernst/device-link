@@ -55,6 +55,8 @@ BATCH_REACTION_USER = """## Marketing Material
 
 {visual_context}
 
+{cultural_context}
+
 ## Users to Simulate
 {personas_json}
 
@@ -69,7 +71,7 @@ Social proof: {social_proof:.1f}x.
 ## Recent Activity on This Platform
 {recent_activity}
 
-Generate each user's authentic reaction. Consider the FULL post (text AND visual content). Agents react to what they SEE — a polished studio photo lands differently than a raw UGC selfie. Consider their memory of past rounds, their current opinion score, and who they've interacted with before. Agents who've been burned are harder to win back. Champions defend the content. Trolls provoke. Lurkers stay silent. Be realistic."""
+Generate each user's authentic reaction. Consider the FULL post (text AND visual content). Agents react to what they SEE — a polished studio photo lands differently than a raw UGC selfie. Consider the cultural context — agents live in TODAY's world, not a vacuum. They know what's trending, what's cringe, and what memes are dead. Consider their memory of past rounds, their current opinion score, and who they've interacted with before. Agents who've been burned are harder to win back. Champions defend the content. Trolls provoke. Lurkers stay silent. Be realistic."""
 
 # ──────────────────────────────────────────────────────────────────────
 # Environment Configuration Prompt (Sonnet — sets rules of the world)
@@ -77,14 +79,16 @@ Generate each user's authentic reaction. Consider the FULL post (text AND visual
 
 ENVIRONMENT_CONFIG_SYSTEM = """You are the Environment Configuration Agent for a social simulation engine.
 
-Your job is to analyze the marketing material and target audience, then set the optimal simulation parameters (the "rules of the world") for this specific scenario.
+Your job is to analyze the marketing material, target audience, AND the current cultural moment, then set the optimal simulation parameters (the "rules of the world") for this specific scenario.
 
 Consider:
-- How viral is this content likely to be? (adjust viral thresholds)
-- How controversial? (adjust controversy boost, echo chamber dynamics)
+- How viral is this content likely to be given TODAY's cultural context? (adjust viral thresholds)
+- How controversial? Does it touch any active cultural flashpoints? (adjust controversy boost, echo chamber dynamics)
 - What platforms would this naturally appear on? (configure dual-platform)
 - What's the expected engagement pattern? (fast spike vs slow burn)
 - How much social proof matters for this audience? (herd behavior weight)
+- Is there topic fatigue? (audiences may be exhausted by certain themes)
+- Are there cultural sensitivities that would amplify or dampen response?
 
 Return a JSON object with simulation parameters."""
 
@@ -96,6 +100,8 @@ Industry: {industry}
 Crowd size: {crowd_size}
 Archetype distribution: {archetype_summary}
 
+{cultural_context}
+
 ## Current Defaults
 max_rounds: 40
 base_scroll_past_rate: 0.80
@@ -106,8 +112,8 @@ viral_threshold: 0.25
 dark_social_rate: 0.15
 content_freshness_decay: 0.05
 
-Analyze the material and audience, then return optimized parameters as JSON.
-Include a brief "reasoning" field explaining your choices."""
+Analyze the material, audience, AND cultural context, then return optimized parameters as JSON.
+Include a brief "reasoning" field explaining your choices. Factor in the current cultural moment."""
 
 # ──────────────────────────────────────────────────────────────────────
 # Analysis & Report Prompts (Sonnet — high quality)
@@ -121,6 +127,8 @@ You analyze like a political strategist reads polling data — looking for swing
 
 ANALYSIS_USER = """## Original Material
 {material}
+
+{cultural_context}
 
 ## Simulation Parameters
 Crowd size: {crowd_size} agents across {platform_count} platforms
@@ -176,11 +184,13 @@ Each persona has an archetype (how they behave), demographics (who they are), an
 - Specific triggers that would make them engage or disengage
 - An initial opinion tendency toward marketing content
 
-Make each persona feel like a real person, not a caricature. Two "Skeptics" should feel different from each other based on their worldview and demographics."""
+Make each persona feel like a real person, not a caricature. Two "Skeptics" should feel different from each other based on their worldview and demographics. Ground their communication style in the CURRENT cultural moment — they should use current slang, reference current events, and have opinions shaped by today's world."""
 
 PERSONA_GENERATION_USER = """## Audience Context
 Industry: {industry}
 Platform: {platform}
+
+{cultural_context}
 
 ## Persona Skeletons to Enrich
 {personas_json}
@@ -239,6 +249,7 @@ async def call_batch_reactions(
     social_proof: float = 1.0,
     available_actions: str = "",
     visual_context: str = "",
+    cultural_context: str = "",
 ) -> list[dict]:
     """Call Haiku with batched persona reactions. Returns list of reaction dicts."""
     # TODO: implement with anthropic SDK
@@ -252,6 +263,7 @@ async def call_environment_config(
     industry: str,
     crowd_size: int,
     archetype_summary: str,
+    cultural_context: str = "",
 ) -> dict:
     """Call Sonnet to generate optimized environment configuration."""
     # TODO: implement with anthropic SDK
@@ -262,6 +274,7 @@ async def call_analysis(
     material: str,
     simulation_results: dict,
     feed: list[dict],
+    cultural_context: str = "",
 ) -> dict:
     """Call Sonnet for final analysis and recommendations."""
     # TODO: implement with anthropic SDK
@@ -272,6 +285,7 @@ async def call_analysis(
 async def call_persona_generation(
     audience_description: str,
     persona_skeletons: list[dict],
+    cultural_context: str = "",
 ) -> list[dict]:
     """Call Sonnet to enrich persona skeletons with names, backstories, and unique traits."""
     # TODO: implement with anthropic SDK
