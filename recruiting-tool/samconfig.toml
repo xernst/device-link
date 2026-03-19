@@ -1,0 +1,20 @@
+# SAM deploy configuration — run `sam deploy` (no --guided needed)
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "recruiting-tool"
+resolve_s3 = true
+s3_prefix = "recruiting-tool"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+parameter_overrides = "Stage=prod"
+
+[dev.deploy.parameters]
+stack_name = "recruiting-tool-dev"
+resolve_s3 = true
+s3_prefix = "recruiting-tool-dev"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+parameter_overrides = "Stage=dev"

@@ -7,16 +7,24 @@ Globals:
     Runtime: python3.12
     Timeout: 30
     MemorySize: 256
+    CodeUri: .
     Environment:
       Variables:
         TABLE_NAME: !Ref RecruitingTable
         SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
         SLACK_CHANNEL: !Ref SlackChannel
+        ASSETS_BUCKET: !Ref AssetsBucket
 
 Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment stage
   SlackWebhookUrl:
     Type: String
     Default: ""
+    NoEcho: true
     Description: Slack incoming webhook URL for recruiter notifications
   SlackChannel:
     Type: String
@@ -69,10 +77,15 @@ Resources:
   Api:
     Type: AWS::Serverless::Api
     Properties:
-      StageName: prod
+      StageName: !Ref Stage
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
       Cors:
         AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,Authorization'"
+        AllowHeaders: "'Content-Type,Authorization,x-api-key'"
         AllowOrigin: "'*'"
 
   # ---- Job functions ----
@@ -286,6 +299,39 @@ Resources:
           Properties:
             RestApiId: !Ref Api
             Path: /screenings/{candidate_id}/{screening_id}/complete
+            Method: POST
+
+  # ---- Utility functions ----
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/health.check
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /health
+            Method: GET
+            Auth:
+              ApiKeyRequired: false
+
+  PresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/uploads.get_presigned_url
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref AssetsBucket
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /uploads/presign
             Method: POST
 
 Outputs:

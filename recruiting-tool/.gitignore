@@ -9,4 +9,4 @@ build/
 *.env
 .env.*
 node_modules/
-samconfig.toml
+samconfig.local.toml

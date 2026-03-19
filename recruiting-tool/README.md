@@ -39,19 +39,76 @@ Cloud-based recruiting tool for Naples/Xwell salon & spa locations. Uses voice A
 | GET | /candidates/{id}/screenings | List screenings |
 | POST | /screenings/{candidate_id}/{screening_id}/complete | Record results |
 
-## Setup
+### Utility
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | /health | None | Health check (no API key needed) |
+| POST | /uploads/presign | API Key | Get presigned S3 upload URL |
+
+## Prerequisites
+
+- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) configured with credentials
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- Python 3.12+
+
+## Deploy
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run tests
+# First time — install deps and run tests
 pip install -r requirements-dev.txt
-pytest
+make test
 
-# Deploy
-sam build
-sam deploy --guided
+# Deploy to production
+make deploy
+
+# Deploy to dev (no changeset confirmation)
+make deploy-dev
+
+# Or use the deploy script directly
+./scripts/deploy.sh prod    # production
+./scripts/deploy.sh dev     # dev environment
+```
+
+After deploy, grab your API URL and key:
+```bash
+make outputs    # show API URL, table name, bucket
+make api-key    # print the API key value
+```
+
+## Usage
+
+```bash
+API_URL="https://xxx.execute-api.us-east-1.amazonaws.com/prod"
+API_KEY="your-api-key-here"
+
+# Create a job
+curl -X POST "$API_URL/jobs" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Stylist", "location": "Naples, FL", "status": "open"}'
+
+# Create a candidate
+curl -X POST "$API_URL/candidates" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"first_name": "Jane", "last_name": "Doe", "email": "jane@example.com", "job_id": "JOB_ID"}'
+
+# Upload a resume
+curl -X POST "$API_URL/uploads/presign" \
+  -H "x-api-key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix": "resumes", "filename": "jane-doe.pdf", "content_type": "application/pdf"}'
+# Then PUT to the returned upload_url
+
+# Health check (no API key needed)
+curl "$API_URL/health"
+```
+
+## Local Development
+
+```bash
+make local      # Start local API on port 3000
+make logs-CreateJob  # Tail logs for a function
 ```
 
 ## Data Model (Single-Table DynamoDB)
