@@ -170,6 +170,16 @@ class EnvironmentConfig:
     content_freshness_decay: float = 0.05  # content becomes less engaging per round
     controversy_boost: float = 1.3  # controversial content decays slower
 
+    # Humor mechanics (modifiers come from ContentHumorProfile at runtime)
+    humor_engagement_multiplier: float = 1.0  # from humor analysis
+    humor_share_multiplier: float = 1.0
+    humor_comment_multiplier: float = 1.0
+    humor_freshness_modifier: float = 1.0  # <1 = funny stays fresh longer
+    humor_viral_modifier: float = 1.0  # <1 = easier to go viral
+    humor_dark_social_modifier: float = 1.0  # >1 = more DMs/screenshots
+    cringe_cascade_threshold: float = 0.4  # cringe probability that triggers negative viral
+    cringe_cascade_multiplier: float = 2.0  # how much cringe amplifies negative sharing
+
     # Platform-specific modifiers
     twitter_virality_modifier: float = 1.3  # Twitter spreads faster
     reddit_depth_modifier: float = 1.5  # Reddit discussions go deeper
@@ -193,6 +203,10 @@ class TurnAction:
     internal_thought: str | None = None  # private reaction (not visible to others)
     opinion_delta: float = 0.0  # how this action shifted their opinion
     triggered_by: str | None = None  # persona_id that caused exposure
+    # Humor-specific action flags
+    is_cringe_dunk: bool = False  # engaging specifically to mock/roast the content
+    is_meme_remix: bool = False  # creating derivative/remix content
+    humor_reaction: str | None = None  # "genuine_laugh", "cringe", "confused", "offended", "amused"
 
 
 @dataclass
@@ -212,6 +226,7 @@ class SimulationState:
     material_content: str
     material_metadata: dict = field(default_factory=dict)  # extracted entities, tone, etc.
     visual_context: str | None = None  # pre-built visual description from vision engine
+    humor_profile: object | None = None  # ContentHumorProfile — the content's humor DNA
     env_config: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     personas: list[dict] = field(default_factory=list)
     graph: object = None  # SocialGraph
@@ -230,6 +245,8 @@ class SimulationState:
     coalitions: list[set[str]] = field(default_factory=list)  # groups of aligned agents
     opinion_clusters: dict[str, float] = field(default_factory=dict)  # archetype -> avg opinion
     viral_cascades: list[dict] = field(default_factory=list)  # cascade events
+    cringe_cascades: list[dict] = field(default_factory=list)  # negative viral from bad humor
+    meme_mutations: list[dict] = field(default_factory=list)  # agent remixes/mocks of content
 
     # Global metrics
     social_proof_modifier: float = 1.0
@@ -243,9 +260,23 @@ def initialize_simulation(
     graph: object,
     env_config: EnvironmentConfig | None = None,
     visual_context: str | None = None,
+    humor_profile: object | None = None,
 ) -> SimulationState:
-    """Initialize simulation state with MiroFish-aligned defaults."""
+    """Initialize simulation state with MiroFish-aligned defaults.
+
+    If a ContentHumorProfile is provided, its engine modifiers are baked
+    into the EnvironmentConfig so humor affects every mechanic.
+    """
     config = env_config or EnvironmentConfig()
+
+    # Bake humor modifiers into env config
+    if humor_profile is not None:
+        config.humor_engagement_multiplier = getattr(humor_profile, 'engagement_multiplier', 1.0)
+        config.humor_share_multiplier = getattr(humor_profile, 'share_multiplier', 1.0)
+        config.humor_comment_multiplier = getattr(humor_profile, 'comment_multiplier', 1.0)
+        config.humor_freshness_modifier = getattr(humor_profile, 'freshness_decay_modifier', 1.0)
+        config.humor_viral_modifier = getattr(humor_profile, 'viral_threshold_modifier', 1.0)
+        config.humor_dark_social_modifier = getattr(humor_profile, 'dark_social_modifier', 1.0)
 
     # Initialize per-agent memory
     memories = {}
@@ -271,6 +302,7 @@ def initialize_simulation(
         memories=memories,
         platform_states=platform_states,
         visual_context=visual_context,
+        humor_profile=humor_profile,
     )
 
 
@@ -294,10 +326,13 @@ def _compute_initial_opinion(persona: dict) -> float:
 # ──────────────────────────────────────────────────────────────────────
 
 def should_engage(persona: dict, memory: AgentMemory, state: SimulationState) -> bool:
-    """MiroFish-aligned engagement filter.
+    """Engagement filter with humor as a first-class driver.
 
-    Considers: base rate, social proof, memory, opinion, content freshness,
-    and the MiroFish finding that LLM agents are susceptible to herd behavior.
+    Humor changes WHO engages:
+    - Meme natives engage more with meme content, less with corporate speak
+    - Sarcasm defaults engage MORE with cringe (to dunk on it)
+    - No-humor profiles engage LESS with funny content
+    - Cringe content has HIGHER engagement (but negative) than boring content
     """
     base_rate = persona["engagement_rate"]
     config = state.env_config
@@ -306,8 +341,9 @@ def should_engage(persona: dict, memory: AgentMemory, state: SimulationState) ->
     herd_boost = state.social_proof_modifier * config.herd_behavior_weight
     adjusted = base_rate * (1.0 + herd_boost - config.herd_behavior_weight)
 
-    # Content freshness decay (less interesting over time)
-    adjusted *= state.content_freshness
+    # Content freshness decay (modified by humor — funny stays fresh longer)
+    effective_freshness = state.content_freshness
+    adjusted *= effective_freshness
 
     # Memory modifier: agents who already engaged are more likely to re-engage
     if memory.has_engaged:
@@ -316,6 +352,25 @@ def should_engage(persona: dict, memory: AgentMemory, state: SimulationState) ->
     # Opinion modifier: strong opinions (positive OR negative) drive engagement
     opinion_intensity = abs(memory.opinion_score)
     adjusted *= (1.0 + opinion_intensity * 0.3)
+
+    # ── HUMOR MODIFIER ──
+    # This is the key: humor profile of the content x humor worldview of the agent
+    if state.humor_profile is not None:
+        from app.services.simulation.humor import get_humor_compatibility
+        humor_worldview = persona.get("worldview_ids", {}).get("humor", "")
+        content_tone = state.humor_profile.primary_tone.value if hasattr(state.humor_profile, 'primary_tone') else "none"
+
+        compatibility = get_humor_compatibility(humor_worldview, content_tone)
+
+        if compatibility < 0:
+            # Negative compatibility = hostile engagement (dunking, roasting)
+            # They're MORE likely to engage, but negatively
+            adjusted *= abs(compatibility)
+        else:
+            adjusted *= compatibility
+
+        # Content-level humor multiplier (funny content = more engagement overall)
+        adjusted *= config.humor_engagement_multiplier
 
     # Cap at 95%
     adjusted = min(adjusted, 0.95)
@@ -558,9 +613,11 @@ async def run_round(state: SimulationState) -> list[TurnAction]:
     # Update global dynamics
     state.social_proof_modifier = compute_social_proof(state)
     state.controversy_score = compute_controversy(state)
+    # Humor modifier: funny content decays slower (humor_freshness_modifier < 1)
+    effective_decay = config.content_freshness_decay * config.humor_freshness_modifier
     state.content_freshness = max(
         0.2,  # floor — content never fully dies
-        1.0 - (state.current_round * config.content_freshness_decay)
+        1.0 - (state.current_round * effective_decay)
             + (state.controversy_score * (config.controversy_boost - 1.0)),
     )
 
@@ -626,9 +683,25 @@ async def run_round(state: SimulationState) -> list[TurnAction]:
                     platform_state.share_count += 1
                     _propagate_exposure(persona["id"], state)
 
-                    # Cascade check
-                    if platform_state.share_count / max(len(state.exposed), 1) > config.viral_threshold:
+                    # Viral cascade check (humor lowers threshold)
+                    effective_threshold = config.viral_threshold * config.humor_viral_modifier
+                    if platform_state.share_count / max(len(state.exposed), 1) > effective_threshold:
                         _trigger_viral_cascade(persona["id"], state)
+
+                # Screenshots and DMs = dark social amplification
+                if action_type in (ActionType.SCREENSHOT, ActionType.DM):
+                    _propagate_exposure(persona["id"], state)
+
+                # Cringe cascade check: bad humor going viral negatively
+                if state.humor_profile is not None and sentiment in (Sentiment.NEGATIVE, Sentiment.HOSTILE):
+                    hp = state.humor_profile
+                    cringe_prob = hp.cringe_probability if hasattr(hp, 'cringe_probability') else 0.0
+                    if cringe_prob > config.cringe_cascade_threshold:
+                        if action_type in (ActionType.QUOTE, ActionType.SCREENSHOT, ActionType.COMMENT):
+                            _trigger_cringe_cascade(persona["id"], state)
+
+                # Meme mutation check
+                _check_meme_mutation(persona, action_type, state)
 
                 # Social graph influence propagation
                 if action_type not in (ActionType.IGNORE, ActionType.READ, ActionType.BOOKMARK):
@@ -663,29 +736,90 @@ def _pick_action_and_sentiment(
     platform: Platform,
     state: SimulationState,
 ) -> tuple[ActionType, Sentiment]:
-    """Rule-based action + sentiment selection. Replaced by LLM in production."""
+    """Humor-aware action + sentiment selection. Replaced by LLM in production.
+
+    Humor changes HOW people engage:
+    - Cringe content → quote-tweet dunks, screenshots, roast comments
+    - Good memes → shares, DMs to friends, saves
+    - Ironic content → confused comments, "is this serious?" replies
+    - Wholesome content → likes, heartfelt comments, saves
+    """
     memory = state.memories.get(persona["id"])
     opinion = memory.opinion_score if memory else 0.0
+    config = state.env_config
 
-    # Sentiment from opinion
-    if opinion > 0.4:
+    # Get humor context
+    humor_worldview = persona.get("worldview_ids", {}).get("humor", "")
+    content_tone = "none"
+    humor_compatibility = 1.0
+    cringe_prob = 0.0
+    remixability = 0.0
+    screenshot_bait = 0.0
+
+    if state.humor_profile is not None:
+        from app.services.simulation.humor import get_humor_compatibility
+        hp = state.humor_profile
+        content_tone = hp.primary_tone.value if hasattr(hp, 'primary_tone') else "none"
+        humor_compatibility = get_humor_compatibility(humor_worldview, content_tone)
+        cringe_prob = hp.cringe_probability if hasattr(hp, 'cringe_probability') else 0.0
+        remixability = hp.remixability if hasattr(hp, 'remixability') else 0.0
+        screenshot_bait = hp.screenshot_bait if hasattr(hp, 'screenshot_bait') else 0.0
+
+    # ── SENTIMENT (humor-aware) ──
+    if humor_compatibility < 0:
+        # Negative compatibility = they find this cringe/offensive
+        if humor_compatibility < -1.0:
+            sentiment = Sentiment.HOSTILE
+        else:
+            sentiment = Sentiment.NEGATIVE
+    elif opinion > 0.4:
         sentiment = Sentiment.POSITIVE
     elif opinion < -0.4:
         sentiment = Sentiment.NEGATIVE if opinion > -0.7 else Sentiment.HOSTILE
+    elif humor_compatibility > 1.5 and content_tone != "none":
+        # They genuinely find it funny → positive
+        sentiment = Sentiment.POSITIVE
     else:
         sentiment = Sentiment.NEUTRAL
 
-    # Action selection weighted by persona rates and platform
+    # ── ACTION SELECTION (humor-driven) ──
     r = random.random()
-    share_rate = persona.get("share_rate", 0.2)
+    share_rate = persona.get("share_rate", 0.2) * config.humor_share_multiplier
+    dark_social_rate = config.dark_social_rate * config.humor_dark_social_modifier
 
+    # CRINGE DUNK PATH: meme natives and sarcasm defaults dunk on cringe
+    if humor_compatibility < 0 and cringe_prob > 0.3:
+        dunk_roll = random.random()
+        if dunk_roll < 0.35 and platform == Platform.TWITTER:
+            return ActionType.QUOTE, sentiment  # quote-tweet dunk
+        elif dunk_roll < 0.55:
+            return ActionType.SCREENSHOT, sentiment  # screenshot for groupchat
+        elif dunk_roll < 0.75:
+            return ActionType.COMMENT, sentiment  # roast comment
+        else:
+            return ActionType.DM, sentiment  # "you gotta see this" DM
+
+    # MEME REMIX PATH: remixable content gets remixed
+    if remixability > 0.5 and humor_worldview in ("meme_native", "absurdist", "edgy_humor"):
+        if random.random() < remixability * 0.3:
+            if platform == Platform.TWITTER:
+                return ActionType.QUOTE, Sentiment.POSITIVE  # quote with remix
+            else:
+                return ActionType.COMMENT, Sentiment.POSITIVE  # comment with remix
+
+    # SCREENSHOT/DARK SOCIAL PATH: funny content gets DM'd
+    if screenshot_bait > 0.4 and humor_compatibility > 1.0:
+        if random.random() < screenshot_bait * dark_social_rate * 2:
+            return random.choice([ActionType.DM, ActionType.SCREENSHOT]), sentiment
+
+    # STANDARD PATH (with humor multipliers)
     if r < share_rate * 0.3:
         action = ActionType.SHARE
     elif r < share_rate * 0.5 and platform == Platform.TWITTER:
         action = ActionType.QUOTE
     elif r < 0.15:
-        action = ActionType.DM if random.random() < state.env_config.dark_social_rate else ActionType.COMMENT
-    elif r < 0.35:
+        action = ActionType.DM if random.random() < dark_social_rate else ActionType.COMMENT
+    elif r < 0.35 * config.humor_comment_multiplier:
         action = ActionType.COMMENT
     elif r < 0.55:
         action = ActionType.REPLY
@@ -729,10 +863,14 @@ def _propagate_exposure(sharer_id: str, state: SimulationState):
 
 
 def _trigger_viral_cascade(trigger_id: str, state: SimulationState):
-    """Viral cascade: exponential exposure when threshold is crossed."""
+    """Viral cascade: exponential exposure when threshold is crossed.
+
+    Humor modifier: funny content crosses the viral threshold easier
+    (humor_viral_modifier < 1.0 means lower threshold).
+    """
     from app.services.simulation.graph import get_neighbors
     config = state.env_config
-    cascade = {"trigger": trigger_id, "round": state.current_round, "new_exposed": []}
+    cascade = {"trigger": trigger_id, "round": state.current_round, "new_exposed": [], "type": "positive"}
 
     if state.graph:
         # Two hops of cascade exposure
@@ -748,6 +886,107 @@ def _trigger_viral_cascade(trigger_id: str, state: SimulationState):
                         cascade["new_exposed"].append(sid)
 
     state.viral_cascades.append(cascade)
+
+
+def _trigger_cringe_cascade(trigger_id: str, state: SimulationState):
+    """Cringe cascade: bad humor goes viral for the WRONG reasons.
+
+    When cringe_probability is high and meme-literate agents engage:
+    - Screenshots spread through dark social (groupchats, DMs)
+    - Quote-tweet dunks amplify reach but with negative sentiment
+    - The roasting BECOMES the content — more people see the cringe than the ad
+    - Exposure increases but opinion goes negative
+    - 3 hops instead of 2 (cringe travels further than good content)
+    """
+    from app.services.simulation.graph import get_neighbors
+    config = state.env_config
+    cascade = {
+        "trigger": trigger_id,
+        "round": state.current_round,
+        "new_exposed": [],
+        "type": "cringe",
+        "sentiment_impact": "negative",
+    }
+
+    if state.graph:
+        # THREE hops (cringe travels further)
+        first_hop = get_neighbors(state.graph, trigger_id)
+        for fid in first_hop:
+            cringe_spread = config.cascade_probability * config.cringe_cascade_multiplier
+            if random.random() < cringe_spread:
+                state.exposed.add(fid)
+                cascade["new_exposed"].append(fid)
+                # Cringe exposure shifts opinion NEGATIVE
+                if fid in state.memories:
+                    state.memories[fid].update_opinion(
+                        state.current_round, -config.opinion_drift_rate * 2, source=trigger_id,
+                    )
+                # Second hop
+                for sid in get_neighbors(state.graph, fid):
+                    if random.random() < cringe_spread * config.influence_decay:
+                        state.exposed.add(sid)
+                        cascade["new_exposed"].append(sid)
+                        if sid in state.memories:
+                            state.memories[sid].update_opinion(
+                                state.current_round, -config.opinion_drift_rate * 1.5, source=fid,
+                            )
+                        # Third hop (cringe only)
+                        for tid in get_neighbors(state.graph, sid):
+                            if random.random() < cringe_spread * config.influence_decay ** 2:
+                                state.exposed.add(tid)
+                                cascade["new_exposed"].append(tid)
+                                if tid in state.memories:
+                                    state.memories[tid].update_opinion(
+                                        state.current_round, -config.opinion_drift_rate, source=sid,
+                                    )
+
+    state.cringe_cascades.append(cascade)
+    # Also record as viral cascade (cringe IS viral, just negative)
+    state.viral_cascades.append(cascade)
+
+
+def _check_meme_mutation(persona: dict, action_type: ActionType, state: SimulationState):
+    """Check if this agent creates a meme mutation (remix/mock of the original).
+
+    Meme mutations happen when:
+    - Content is remixable (high remixability score)
+    - Agent is meme-literate (meme_native, absurdist, edgy_humor)
+    - Action is a quote-tweet or comment (they add their own spin)
+
+    Mutations amplify reach but shift the narrative away from the brand's control.
+    """
+    if state.humor_profile is None:
+        return
+
+    hp = state.humor_profile
+    remixability = hp.remixability if hasattr(hp, 'remixability') else 0.0
+    if remixability < 0.3:
+        return
+
+    humor_worldview = persona.get("worldview_ids", {}).get("humor", "")
+    if humor_worldview not in ("meme_native", "absurdist", "edgy_humor", "cultural_humor"):
+        return
+
+    if action_type not in (ActionType.QUOTE, ActionType.COMMENT, ActionType.SCREENSHOT):
+        return
+
+    # Roll for mutation
+    if random.random() < remixability * 0.4:
+        cringe_prob = hp.cringe_probability if hasattr(hp, 'cringe_probability') else 0.0
+        mutation = {
+            "creator": persona["id"],
+            "round": state.current_round,
+            "humor_worldview": humor_worldview,
+            "type": "mock" if cringe_prob > 0.4 else "remix",
+            "amplifies_reach": True,
+            "shifts_narrative": True,
+            # Mocks shift opinion negative, remixes can go either way
+            "sentiment_effect": "negative" if cringe_prob > 0.4 else "mixed",
+        }
+        state.meme_mutations.append(mutation)
+
+        # Mutations expose more people (the remix becomes content)
+        _propagate_exposure(persona["id"], state)
 
 
 # ──────────────────────────────────────────────────────────────────────
