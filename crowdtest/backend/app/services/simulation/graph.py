@@ -26,11 +26,13 @@ def build_social_graph(
 
     # Phase 1: Ring lattice (each node connects to nearest neighbors)
     k = min(avg_connections, n - 1)
+    half_k = max(k // 2, 1)  # ensure at least 1 neighbor per direction
     for i in range(n):
-        for j in range(1, k // 2 + 1):
+        for j in range(1, half_k + 1):
             neighbor = (i + j) % n
-            edge = tuple(sorted([persona_ids[i], persona_ids[neighbor]]))
-            edges.add(edge)
+            if neighbor != i:  # guard against self-loop on tiny graphs
+                edge = tuple(sorted([persona_ids[i], persona_ids[neighbor]]))
+                edges.add(edge)
 
     # Phase 2: Rewire with small-world probability (Watts-Strogatz style)
     rewire_prob = 0.15

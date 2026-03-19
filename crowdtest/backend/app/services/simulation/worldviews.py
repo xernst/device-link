@@ -768,4 +768,32 @@ INDUSTRY_WORLDVIEW_DEFAULTS: dict[str, dict[str, dict[str, float]]] = {
         "trust": {"peer_trusting": 0.35, "self_reliant": 0.25, "institution_trusting": 0.2, "authority_skeptical": 0.2},
         "humor": {"meme_native": 0.3, "absurdist": 0.2, "edgy_humor": 0.15, "sarcasm_default": 0.15, "cultural_humor": 0.2},
     },
+    "developer_tools": {
+        "political": {"libertarian": 0.25, "apolitical": 0.2, "centrist": 0.2, "progressive": 0.15, "moderate_left": 0.1, "moderate_right": 0.1},
+        "economic": {"free_market": 0.35, "conscious_capitalism": 0.2, "anti_consumerist": 0.25, "aspiring_affluent": 0.2},
+        "media_diet": {"social_native": 0.3, "alternative_media": 0.25, "academic": 0.2, "news_avoidant": 0.15, "mainstream": 0.1},
+        "trust": {"self_reliant": 0.35, "authority_skeptical": 0.25, "peer_trusting": 0.25, "institution_trusting": 0.15},
+        "humor": {"sarcasm_default": 0.25, "dry_wit": 0.25, "meme_native": 0.2, "no_humor": 0.15, "absurdist": 0.15},
+    },
+    "fintech": {
+        "political": {"centrist": 0.25, "moderate_right": 0.2, "libertarian": 0.2, "moderate_left": 0.15, "apolitical": 0.1, "conservative": 0.1},
+        "economic": {"free_market": 0.35, "aspiring_affluent": 0.3, "conscious_capitalism": 0.2, "anti_consumerist": 0.15},
+        "media_diet": {"mainstream": 0.3, "social_native": 0.25, "academic": 0.2, "alternative_media": 0.15, "news_avoidant": 0.1},
+        "trust": {"institution_trusting": 0.3, "self_reliant": 0.25, "peer_trusting": 0.25, "authority_skeptical": 0.2},
+        "humor": {"no_humor": 0.3, "dry_wit": 0.25, "sarcasm_default": 0.2, "meme_native": 0.15, "cultural_humor": 0.1},
+    },
+    "health_wellness": {
+        "political": {"moderate_left": 0.25, "progressive": 0.2, "centrist": 0.2, "apolitical": 0.15, "moderate_right": 0.1, "conservative": 0.1},
+        "economic": {"conscious_capitalism": 0.35, "aspiring_affluent": 0.25, "anti_consumerist": 0.2, "free_market": 0.2},
+        "media_diet": {"social_native": 0.3, "alternative_media": 0.25, "mainstream": 0.2, "academic": 0.15, "news_avoidant": 0.1},
+        "trust": {"peer_trusting": 0.3, "self_reliant": 0.3, "authority_skeptical": 0.2, "institution_trusting": 0.2},
+        "humor": {"wholesome_humor": 0.3, "cultural_humor": 0.2, "no_humor": 0.2, "dry_wit": 0.15, "meme_native": 0.15},
+    },
+    "education": {
+        "political": {"progressive": 0.25, "moderate_left": 0.25, "centrist": 0.2, "apolitical": 0.15, "moderate_right": 0.1, "libertarian": 0.05},
+        "economic": {"conscious_capitalism": 0.3, "anti_consumerist": 0.25, "free_market": 0.25, "aspiring_affluent": 0.2},
+        "media_diet": {"academic": 0.35, "mainstream": 0.25, "social_native": 0.2, "alternative_media": 0.1, "news_avoidant": 0.1},
+        "trust": {"institution_trusting": 0.3, "peer_trusting": 0.3, "self_reliant": 0.2, "authority_skeptical": 0.2},
+        "humor": {"dry_wit": 0.25, "wholesome_humor": 0.2, "sarcasm_default": 0.2, "cultural_humor": 0.2, "no_humor": 0.15},
+    },
 }

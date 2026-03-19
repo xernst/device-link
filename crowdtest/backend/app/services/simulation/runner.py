@@ -728,12 +728,16 @@ async def run_round(state: SimulationState) -> list[TurnAction]:
                     platform_state.engagement_count += 1
 
                 # Graph mutations (follow/block/mute)
-                if action_type == ActionType.FOLLOW:
-                    memory.followed.append(persona.get("target_persona", "unknown"))
-                elif action_type == ActionType.MUTE:
-                    memory.muted.append(persona.get("target_persona", "unknown"))
-                elif action_type == ActionType.BLOCK:
-                    memory.blocked.append(persona.get("target_persona", "unknown"))
+                # Pick a target: for positive actions, follow an influential engaged agent
+                # For negative actions, block/mute whoever triggered this exposure
+                if action_type in (ActionType.FOLLOW, ActionType.MUTE, ActionType.BLOCK):
+                    target_id = _pick_social_target(persona["id"], action_type, state)
+                    if action_type == ActionType.FOLLOW:
+                        memory.followed.append(target_id)
+                    elif action_type == ActionType.MUTE:
+                        memory.muted.append(target_id)
+                    elif action_type == ActionType.BLOCK:
+                        memory.blocked.append(target_id)
 
         # Update platform trending
         platform_state.trending_score = (
@@ -908,6 +912,42 @@ def _pick_action_and_sentiment(
         action = random.choice([ActionType.BLOCK, ActionType.REPORT])
 
     return action, sentiment
+
+
+def _pick_social_target(agent_id: str, action_type: ActionType, state: SimulationState) -> str:
+    """Pick a realistic target for follow/block/mute actions.
+
+    Follow: pick an influential engaged agent (someone whose content they liked).
+    Block/Mute: pick an engaged agent with opposing opinion (someone who annoyed them).
+    """
+    from app.services.simulation.graph import get_neighbors
+    memory = state.memories.get(agent_id)
+    engaged_others = [pid for pid in state.engaged if pid != agent_id]
+
+    if not engaged_others:
+        return "brand_account"  # fallback: acting on the brand itself
+
+    if action_type == ActionType.FOLLOW:
+        # Prefer high-influence engaged agents
+        personas_map = {p["id"]: p for p in state.personas}
+        candidates = [(pid, personas_map.get(pid, {}).get("influence_weight", 0.5))
+                       for pid in engaged_others
+                       if pid not in (memory.followed if memory else [])]
+        if candidates:
+            weights = [w for _, w in candidates]
+            return random.choices([c for c, _ in candidates], weights=weights, k=1)[0]
+    else:
+        # Block/mute: pick someone with opposing opinion
+        if memory:
+            opposing = [
+                pid for pid in engaged_others
+                if pid in state.memories
+                and state.memories[pid].opinion_score * memory.opinion_score < 0
+            ]
+            if opposing:
+                return random.choice(opposing)
+
+    return random.choice(engaged_others)
 
 
 def _check_worldview_collision(persona: dict, content: str) -> float:
