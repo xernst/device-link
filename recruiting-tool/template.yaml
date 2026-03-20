@@ -1,0 +1,475 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AI Screening Assistant — Voice AI recruiting tool for salon & spa locations
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    CodeUri: .
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref RecruitingTable
+        SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
+        SLACK_CHANNEL: !Ref SlackChannel
+        ASSETS_BUCKET: !Ref AssetsBucket
+
+Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment stage
+  SlackWebhookUrl:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Slack incoming webhook URL for recruiter notifications
+  SlackChannel:
+    Type: String
+    Default: "#recruiting"
+    Description: Slack channel for notifications
+
+Resources:
+  # ---- DynamoDB ----
+  RecruitingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: recruiting-candidates
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # ---- S3 bucket for resumes and recordings ----
+  AssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-assets"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ---- API Gateway ----
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,x-api-key'"
+        AllowOrigin: "'*'"
+
+  # ---- Job functions ----
+  CreateJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/jobs.create
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs
+            Method: POST
+
+  GetJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/jobs.get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}
+            Method: GET
+
+  ListJobsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/jobs.list_all
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs
+            Method: GET
+
+  UpdateJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/jobs.update
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}
+            Method: PUT
+
+  DeleteJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/jobs.delete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}
+            Method: DELETE
+
+  # ---- Candidate functions ----
+  CreateCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.create
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates
+            Method: POST
+
+  GetCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}
+            Method: GET
+
+  ListCandidatesByJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.list_by_job
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/candidates
+            Method: GET
+
+  UpdateCandidateStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.update_status
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/status
+            Method: PATCH
+
+  DeleteCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.delete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}
+            Method: DELETE
+
+  # ---- Screening functions ----
+  ScheduleScreeningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/screenings.schedule
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /screenings
+            Method: POST
+
+  GetScreeningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/screenings.get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /screenings/{candidate_id}/{screening_id}
+            Method: GET
+
+  ListScreeningsByCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/screenings.list_by_candidate
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/screenings
+            Method: GET
+
+  CompleteScreeningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/screenings.complete
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /screenings/{candidate_id}/{screening_id}/complete
+            Method: POST
+
+  # ---- Scraping functions ----
+  ScrapeSearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.search
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/search
+            Method: POST
+
+  ScrapeImportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.import_jobs
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/import
+            Method: POST
+
+  # ---- Filtering functions ----
+  RankCandidatesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.rank_candidates
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/candidates/rank
+            Method: GET
+
+  MatchCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.match_candidate
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/match
+            Method: GET
+
+  ScoreCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.score
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/score
+            Method: POST
+
+  # ---- New functions (Step 10) ----
+  ContactCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.track_contact
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/contact
+            Method: PATCH
+
+  ScrapePresetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.preset_import
+      Timeout: 120
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/preset
+            Method: POST
+
+  PreScreenQuestionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.prescreen_questions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/prescreen-questions
+            Method: GET
+
+  # ---- Utility functions ----
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/health.check
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /health
+            Method: GET
+            Auth:
+              ApiKeyRequired: false
+
+  PresignedUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/uploads.get_presigned_url
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref AssetsBucket
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /uploads/presign
+            Method: POST
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref RecruitingTable
+  AssetsBucket:
+    Description: S3 bucket for resumes and recordings
+    Value: !Ref AssetsBucket

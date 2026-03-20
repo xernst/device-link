@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.aws-sam/
+.pytest_cache/
+.coverage
+*.env
+.env.*
+node_modules/
+samconfig.local.toml
