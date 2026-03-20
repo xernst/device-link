@@ -70,6 +70,23 @@ def delete_item(pk: str, sk: str) -> dict:
     )
 
 
+def update_attribute(pk: str, sk: str, attribute_name: str, attribute_value: str) -> dict:
+    """Update a single string attribute on an item."""
+    client = _get_table()
+    now = datetime.now(timezone.utc).isoformat()
+    return client.update_item(
+        TableName=TABLE_NAME,
+        Key={"PK": {"S": pk}, "SK": {"S": sk}},
+        UpdateExpression="SET #attr = :val, updated_at = :now",
+        ExpressionAttributeNames={"#attr": attribute_name},
+        ExpressionAttributeValues={
+            ":val": {"S": attribute_value},
+            ":now": {"S": now},
+        },
+        ReturnValues="ALL_NEW",
+    )
+
+
 def update_status(pk: str, sk: str, new_status: str, gsi1sk_prefix: str = "") -> dict:
     """Update the status field and GSI1SK of an item."""
     client = _get_table()

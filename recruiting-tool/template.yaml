@@ -14,10 +14,11 @@ Globals:
         SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
         SLACK_CHANNEL: !Ref SlackChannel
         ASSETS_BUCKET: !Ref AssetsBucket
-        OUTREACH_EMAIL_FROM: ""
-        OUTREACH_SMS_ENABLED: "false"
-        GOOGLE_CALENDAR_ID: ""
-        GOOGLE_SERVICE_ACCOUNT_JSON: ""
+        INDEED_CLIENT_ID: !Ref IndeedClientId
+        INDEED_CLIENT_SECRET: !Ref IndeedClientSecret
+        INDEED_EMPLOYER_ID: !Ref IndeedEmployerId
+        INDEED_WEBHOOK_SECRET: !Ref IndeedWebhookSecret
+        INDEED_APPLY_WEBHOOK_URL: !Ref IndeedApplyWebhookUrl
 
 Parameters:
   Stage:
@@ -34,6 +35,29 @@ Parameters:
     Type: String
     Default: "#recruiting"
     Description: Slack channel for notifications
+  IndeedClientId:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Indeed OAuth2 client ID
+  IndeedClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Indeed OAuth2 client secret
+  IndeedEmployerId:
+    Type: String
+    Default: ""
+    Description: Indeed employer account ID
+  IndeedWebhookSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Secret for validating Indeed Apply webhook signatures
+  IndeedApplyWebhookUrl:
+    Type: String
+    Default: ""
+    Description: Public URL of the Indeed Apply webhook endpoint
 
 Resources:
   # ---- DynamoDB ----
@@ -386,6 +410,54 @@ Resources:
             Path: /candidates/score
             Method: POST
 
+  # ---- Indeed integration ----
+  PublishJobToIndeedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/indeed.publish_job
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/publish
+            Method: POST
+
+  UnpublishJobFromIndeedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/indeed.unpublish_job
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/unpublish
+            Method: POST
+
+  IndeedApplyWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/indeed.apply_webhook
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /indeed/apply
+            Method: POST
+            Auth:
+              ApiKeyRequired: false  # Indeed signs with HMAC, not API key
+
   # ---- New functions (Step 10) ----
   ContactCandidateFunction:
     Type: AWS::Serverless::Function
@@ -433,88 +505,6 @@ Resources:
             RestApiId: !Ref Api
             Path: /jobs/{id}/prescreen-questions
             Method: GET
-
-  # ---- Resume parsing ----
-  ParseResumeFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: src/handlers/resume.parse
-      Timeout: 60
-      MemorySize: 512
-      Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref AssetsBucket
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecruitingTable
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            RestApiId: !Ref Api
-            Path: /candidates/{id}/parse-resume
-            Method: POST
-
-  # ---- Outreach functions ----
-  OutreachFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: src/handlers/outreach.send
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecruitingTable
-        - SESCrudPolicy:
-            IdentityName: "*"
-        - Statement:
-            - Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: "*"
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            RestApiId: !Ref Api
-            Path: /candidates/{id}/outreach
-            Method: POST
-
-  OutreachBulkFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: src/handlers/outreach.send_bulk
-      Timeout: 120
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecruitingTable
-        - SESCrudPolicy:
-            IdentityName: "*"
-        - Statement:
-            - Effect: Allow
-              Action:
-                - sns:Publish
-              Resource: "*"
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            RestApiId: !Ref Api
-            Path: /jobs/{id}/outreach-bulk
-            Method: POST
-
-  # ---- Interview scheduling ----
-  ScheduleInterviewFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: src/handlers/interviews.schedule
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecruitingTable
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            RestApiId: !Ref Api
-            Path: /interviews
-            Method: POST
 
   # ---- Utility functions ----
   HealthFunction:
