@@ -19,6 +19,8 @@ Globals:
         INDEED_EMPLOYER_ID: !Ref IndeedEmployerId
         INDEED_WEBHOOK_SECRET: !Ref IndeedWebhookSecret
         INDEED_APPLY_WEBHOOK_URL: !Ref IndeedApplyWebhookUrl
+        SLACK_BOT_TOKEN: !Ref SlackBotToken
+        SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
 
 Parameters:
   Stage:
@@ -58,6 +60,16 @@ Parameters:
     Type: String
     Default: ""
     Description: Public URL of the Indeed Apply webhook endpoint
+  SlackBotToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Slack Bot OAuth token (xoxb-...)
+  SlackSigningSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Slack app signing secret for request verification
 
 Resources:
   # ---- DynamoDB ----
@@ -409,6 +421,41 @@ Resources:
             RestApiId: !Ref Api
             Path: /candidates/score
             Method: POST
+
+  # ---- Slack interactive ----
+  SlackActionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/slack_interactive.handle_actions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /slack/actions
+            Method: POST
+            Auth:
+              ApiKeyRequired: false
+
+  SlackCommandsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/slack_interactive.handle_commands
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /slack/commands
+            Method: POST
+            Auth:
+              ApiKeyRequired: false
 
   # ---- Indeed integration ----
   PublishJobToIndeedFunction:
