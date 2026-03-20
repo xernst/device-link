@@ -1,5 +1,6 @@
 """Candidate data model for DynamoDB."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -15,6 +16,13 @@ class CandidateStatus(str, Enum):
     REJECTED = "rejected"
     HIRED = "hired"
     WITHDRAWN = "withdrawn"
+
+
+class ResponseStatus(str, Enum):
+    NOT_CONTACTED = "not_contacted"
+    AWAITING_RESPONSE = "awaiting_response"
+    RESPONSIVE = "responsive"
+    UNRESPONSIVE = "unresponsive"
 
 
 class Candidate:
@@ -35,6 +43,12 @@ class Candidate:
         source: str = "",
         resume_s3_key: Optional[str] = None,
         notes: str = "",
+        # New fields
+        certifications: Optional[list] = None,
+        availability: Optional[dict] = None,
+        years_experience: Optional[int] = None,
+        last_contacted: Optional[str] = None,
+        response_status: ResponseStatus = ResponseStatus.NOT_CONTACTED,
         created_at: Optional[str] = None,
         updated_at: Optional[str] = None,
     ):
@@ -49,6 +63,11 @@ class Candidate:
         self.source = source
         self.resume_s3_key = resume_s3_key
         self.notes = notes
+        self.certifications = certifications or []
+        self.availability = availability or {}
+        self.years_experience = years_experience
+        self.last_contacted = last_contacted
+        self.response_status = response_status
         now = datetime.now(timezone.utc).isoformat()
         self.created_at = created_at or now
         self.updated_at = updated_at or now
@@ -57,7 +76,7 @@ class Candidate:
         """Serialize to DynamoDB item."""
         item = {
             "PK": {"S": f"CANDIDATE#{self.candidate_id}"},
-            "SK": {"S": f"PROFILE"},
+            "SK": {"S": "PROFILE"},
             "GSI1PK": {"S": f"JOB#{self.job_id}"} if self.job_id else {"S": "JOB#UNASSIGNED"},
             "GSI1SK": {"S": f"STATUS#{self.status.value}#{self.candidate_id}"},
             "candidate_id": {"S": self.candidate_id},
@@ -70,16 +89,40 @@ class Candidate:
             "status": {"S": self.status.value},
             "source": {"S": self.source},
             "notes": {"S": self.notes},
+            "response_status": {"S": self.response_status.value},
             "created_at": {"S": self.created_at},
             "updated_at": {"S": self.updated_at},
         }
         if self.resume_s3_key:
             item["resume_s3_key"] = {"S": self.resume_s3_key}
+        if self.certifications:
+            item["certifications"] = {"L": [{"S": c} for c in self.certifications]}
+        if self.availability:
+            item["availability"] = {"S": json.dumps(self.availability)}
+        if self.years_experience is not None:
+            item["years_experience"] = {"N": str(self.years_experience)}
+        if self.last_contacted:
+            item["last_contacted"] = {"S": self.last_contacted}
         return item
 
     @classmethod
     def from_dynamo(cls, item: dict) -> "Candidate":
         """Deserialize from DynamoDB item."""
+        certs = []
+        if "certifications" in item:
+            certs = [c["S"] for c in item["certifications"]["L"]]
+
+        availability = {}
+        if "availability" in item:
+            try:
+                availability = json.loads(item["availability"]["S"])
+            except (json.JSONDecodeError, KeyError):
+                availability = {}
+
+        years_exp = None
+        if "years_experience" in item:
+            years_exp = int(item["years_experience"]["N"])
+
         return cls(
             candidate_id=item["candidate_id"]["S"],
             job_id=item.get("job_id", {}).get("S") or None,
@@ -92,6 +135,13 @@ class Candidate:
             source=item.get("source", {}).get("S", ""),
             resume_s3_key=item.get("resume_s3_key", {}).get("S"),
             notes=item.get("notes", {}).get("S", ""),
+            certifications=certs,
+            availability=availability,
+            years_experience=years_exp,
+            last_contacted=item.get("last_contacted", {}).get("S"),
+            response_status=ResponseStatus(
+                item.get("response_status", {}).get("S", "not_contacted")
+            ),
             created_at=item["created_at"]["S"],
             updated_at=item["updated_at"]["S"],
         )
@@ -109,6 +159,11 @@ class Candidate:
             "status": self.status.value,
             "source": self.source,
             "notes": self.notes,
+            "certifications": self.certifications,
+            "availability": self.availability,
+            "years_experience": self.years_experience,
+            "last_contacted": self.last_contacted,
+            "response_status": self.response_status.value,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -131,4 +186,11 @@ class Candidate:
             source=data.get("source", ""),
             resume_s3_key=data.get("resume_s3_key"),
             notes=data.get("notes", ""),
+            certifications=data.get("certifications", []),
+            availability=data.get("availability", {}),
+            years_experience=data.get("years_experience"),
+            last_contacted=data.get("last_contacted"),
+            response_status=ResponseStatus(
+                data.get("response_status", "not_contacted")
+            ),
         )

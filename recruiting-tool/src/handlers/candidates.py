@@ -89,3 +89,38 @@ def delete(event, context):
         return success({"deleted": candidate_id})
     except Exception as e:
         return error(str(e), status_code=500)
+
+
+def track_contact(event, context):
+    """PATCH /candidates/{id}/contact — Record outreach attempt and response status."""
+    try:
+        from datetime import datetime, timezone
+        candidate_id = event["pathParameters"]["id"]
+        data = parse_body(event)
+
+        response_status = data.get("response_status")
+        last_contacted = data.get("last_contacted") or datetime.now(timezone.utc).isoformat()
+
+        valid_statuses = ["not_contacted", "awaiting_response", "responsive", "unresponsive"]
+        if response_status and response_status not in valid_statuses:
+            return error(f"Invalid response_status. Must be one of: {valid_statuses}")
+
+        # Fetch existing candidate
+        item = dynamodb.get_item(f"CANDIDATE#{candidate_id}", "PROFILE")
+        if not item:
+            return error("Candidate not found", status_code=404)
+
+        candidate = Candidate.from_dynamo(item)
+        candidate.last_contacted = last_contacted
+        if response_status:
+            from src.models.candidate import ResponseStatus
+            candidate.response_status = ResponseStatus(response_status)
+
+        dynamodb.put_item(candidate.to_dynamo())
+        return success({
+            "candidate_id": candidate_id,
+            "last_contacted": last_contacted,
+            "response_status": candidate.response_status.value,
+        })
+    except Exception as e:
+        return error(str(e), status_code=500)

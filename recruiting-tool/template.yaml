@@ -382,6 +382,54 @@ Resources:
             Path: /candidates/score
             Method: POST
 
+  # ---- New functions (Step 10) ----
+  ContactCandidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/candidates.track_contact
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/contact
+            Method: PATCH
+
+  ScrapePresetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/scraping.preset_import
+      Timeout: 120
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /scrape/preset
+            Method: POST
+
+  PreScreenQuestionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/filtering.prescreen_questions
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/prescreen-questions
+            Method: GET
+
   # ---- Utility functions ----
   HealthFunction:
     Type: AWS::Serverless::Function

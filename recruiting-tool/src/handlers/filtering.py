@@ -3,7 +3,7 @@
 from src.models.candidate import Candidate
 from src.models.job import Job
 from src.services import dynamodb
-from src.services.filtering import filter_candidates, match_jobs_to_candidate, score_candidate
+from src.services.filtering import filter_candidates, match_jobs_to_candidate, score_candidate, generate_prescreen_questions
 from src.utils.response import success, error, parse_body
 
 
@@ -113,5 +113,24 @@ def score(event, context):
         result["job_id"] = job_id
 
         return success(result)
+    except Exception as e:
+        return error(str(e), status_code=500)
+
+
+def prescreen_questions(event, context):
+    """GET /jobs/{id}/prescreen-questions — Auto-generate pre-screen questions for a job."""
+    try:
+        job_id = event["pathParameters"]["id"]
+        job_item = dynamodb.get_item(f"JOB#{job_id}", "METADATA")
+        if not job_item:
+            return error("Job not found", status_code=404)
+        job = Job.from_dynamo(job_item).to_api()
+        questions = generate_prescreen_questions(job)
+        return success({
+            "job_id": job_id,
+            "job_title": job.get("title", ""),
+            "questions": questions,
+            "count": len(questions),
+        })
     except Exception as e:
         return error(str(e), status_code=500)
