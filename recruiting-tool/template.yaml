@@ -14,6 +14,10 @@ Globals:
         SLACK_WEBHOOK_URL: !Ref SlackWebhookUrl
         SLACK_CHANNEL: !Ref SlackChannel
         ASSETS_BUCKET: !Ref AssetsBucket
+        OUTREACH_EMAIL_FROM: !Ref OutreachEmailFrom
+        OUTREACH_SMS_ENABLED: !Ref OutreachSmsEnabled
+        GOOGLE_CALENDAR_ID: !Ref GoogleCalendarId
+        GOOGLE_SERVICE_ACCOUNT_JSON: !Ref GoogleServiceAccountJson
         INDEED_CLIENT_ID: !Ref IndeedClientId
         INDEED_CLIENT_SECRET: !Ref IndeedClientSecret
         INDEED_EMPLOYER_ID: !Ref IndeedEmployerId
@@ -37,6 +41,24 @@ Parameters:
     Type: String
     Default: "#recruiting"
     Description: Slack channel for notifications
+  OutreachEmailFrom:
+    Type: String
+    Default: ""
+    Description: SES verified sender email address for candidate outreach
+  OutreachSmsEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Enable SMS outreach via SNS
+  GoogleCalendarId:
+    Type: String
+    Default: ""
+    Description: Google Calendar ID for interview scheduling
+  GoogleServiceAccountJson:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Base64-encoded Google service account JSON for Calendar API
   IndeedClientId:
     Type: String
     Default: ""
@@ -552,6 +574,76 @@ Resources:
             RestApiId: !Ref Api
             Path: /jobs/{id}/prescreen-questions
             Method: GET
+
+  # ---- Phase 2: Resume parsing, Outreach, Interviews ----
+  ParseResumeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/resume.parse_resume
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+        - S3ReadPolicy:
+            BucketName: !Ref AssetsBucket
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/parse-resume
+            Method: POST
+
+  OutreachFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/outreach.send
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+        - SESCrudPolicy:
+            IdentityName: !Ref OutreachEmailFrom
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /candidates/{id}/outreach
+            Method: POST
+
+  OutreachBulkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/outreach.send_bulk
+      Timeout: 60
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+        - SESCrudPolicy:
+            IdentityName: !Ref OutreachEmailFrom
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{id}/outreach-bulk
+            Method: POST
+
+  ScheduleInterviewFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/interviews.schedule
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RecruitingTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /interviews
+            Method: POST
 
   # ---- Utility functions ----
   HealthFunction:
