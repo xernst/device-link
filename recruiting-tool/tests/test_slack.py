@@ -63,12 +63,14 @@ class TestCandidateBlocks:
         }
         blocks = _candidate_blocks(candidate, job, score)
         assert isinstance(blocks, list)
-        assert len(blocks) >= 3
-        # Should have action buttons
+        assert len(blocks) >= 4
+        # Should have header and action buttons
+        assert blocks[0]["type"] == "header"
         action_block = next((b for b in blocks if b["type"] == "actions"), None)
         assert action_block is not None
         action_ids = [a["action_id"] for a in action_block["elements"]]
         assert "schedule_interview" in action_ids
+        assert "flag_review" in action_ids
         assert "reject_candidate" in action_ids
 
     def test_disqualified_shows_reason(self):
