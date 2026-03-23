@@ -445,8 +445,8 @@ class TestGeneratePrescreenQuestions:
 
 class TestSearchPresets:
     def test_all_presets_present(self):
-        expected = {"spa_therapists", "management", "biosecurity", "guest_services"}
-        assert set(SEARCH_PRESETS.keys()) == expected
+        legacy = {"spa_therapists", "management", "biosecurity", "guest_services"}
+        assert legacy.issubset(set(SEARCH_PRESETS.keys()))
 
     def test_preset_structure(self):
         for name, preset in SEARCH_PRESETS.items():

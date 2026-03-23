@@ -8,7 +8,7 @@ s3_prefix = "recruiting-tool"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
-parameter_overrides = "Stage=prod"
+parameter_overrides = "Stage=prod SlackWebhookUrl=$SLACK_WEBHOOK_URL SlackBotToken=$SLACK_BOT_TOKEN SlackSigningSecret=$SLACK_SIGNING_SECRET SlackChannel=#recruiting"
 
 [dev.deploy.parameters]
 stack_name = "recruiting-tool-dev"
@@ -17,4 +17,4 @@ s3_prefix = "recruiting-tool-dev"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = false
-parameter_overrides = "Stage=dev"
+parameter_overrides = "Stage=dev SlackWebhookUrl=$SLACK_WEBHOOK_URL SlackBotToken=$SLACK_BOT_TOKEN SlackSigningSecret=$SLACK_SIGNING_SECRET SlackChannel=#recruiting"

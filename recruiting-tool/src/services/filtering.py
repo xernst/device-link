@@ -266,10 +266,16 @@ def generate_prescreen_questions(job: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Indeed search presets
+# Indeed search presets — built from config + legacy names
 # ---------------------------------------------------------------------------
 
-SEARCH_PRESETS = {
+from src.config.indeed_presets import get_search_presets_for_scraper
+
+# Detailed per-role presets from config
+_CONFIG_PRESETS = get_search_presets_for_scraper()
+
+# Legacy grouped preset for backwards compatibility
+_LEGACY_PRESETS = {
     "spa_therapists": {
         "search_terms": ["massage therapist", "esthetician", "nail technician"],
         "department": "Spa",
@@ -291,6 +297,9 @@ SEARCH_PRESETS = {
         "role_category": "guest_services",
     },
 }
+
+# Merged: config presets take precedence, legacy names still work
+SEARCH_PRESETS = {**_LEGACY_PRESETS, **_CONFIG_PRESETS}
 
 
 # ---------------------------------------------------------------------------
